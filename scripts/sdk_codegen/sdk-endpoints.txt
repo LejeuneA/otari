@@ -356,6 +356,7 @@ GET /v1/connections/apps                         # not yet wrapped
 GET /v1/connections                              # not yet wrapped
 POST /v1/connections/{provider}/authorize        # not yet wrapped
 GET /v1/connections/{provider}/token             # not yet wrapped
+POST /v1/connections/{provider}/import           # not yet wrapped
 GET /v1/connections/flows/{flow_id}              # not yet wrapped
 POST /v1/connections/{connection_id}/rejected    # not yet wrapped
 DELETE /v1/connections/user                      # not yet wrapped

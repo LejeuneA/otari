@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api.deps import get_config, get_db, verify_api_key_or_master_key
+from gateway.api.deps import get_config, get_db, verify_api_key_or_master_key, verify_master_key
 from gateway.api.routes._public_auth import throttle_public_auth
 from gateway.core.config import CONNECTED_APP_PROVIDERS, GatewayConfig
 from gateway.models.entities import APIKey
@@ -38,6 +38,7 @@ from gateway.services.tenancy.connected_account_service import (
     ConnectedAccountUpdate,
     ConnectedAppPublic,
     FlowPublic,
+    ImportRequest,
     RejectedReport,
     with_query,
 )
@@ -125,6 +126,24 @@ async def authorize_connection(
         shared=body.shared,
         return_url=body.return_url,
     )
+
+
+@router.post("/{provider}/import", dependencies=[Depends(verify_master_key)])
+async def import_connection(
+    service: ServiceDep, workspace_id: WorkspaceDep, provider: ProviderPath, body: ImportRequest
+) -> ConnectedAccountPublic:
+    """Hand Otari a grant obtained elsewhere, for migrating an application that ran its own OAuth.
+
+    The one way a credential enters Otari without a consent screen, so it takes
+    the master key rather than an application's API key: an application that
+    could import grants could plant one for a user who never consented. Run it
+    as a migration, then let the application use the ordinary endpoints.
+
+    Idempotent on the account it names, so a backfill can be resumed or
+    repeated. The app must be configured here, because from now on this
+    deployment is what refreshes and revokes it.
+    """
+    return await service.import_grant(workspace_id, provider, body)
 
 
 @router.get("/flows/{flow_id}")

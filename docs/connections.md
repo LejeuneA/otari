@@ -217,6 +217,36 @@ best effort, and deletes the rows, so "delete my data" does not stop at your
 own database. Connections the workspace shares are left alone: they belong to
 the workspace, and other users are still acting through them.
 
+## Migrating an application that ran its own OAuth
+
+`POST /v1/connections/{provider}/import` hands Otari a grant it did not
+obtain: you decrypt what you stored, post it, and stop maintaining it. It
+takes the **master key**, not an application API key, because an application
+that could import grants could plant one for a user who never consented. Run
+it as a migration, then use the ordinary endpoints.
+
+```python
+otari.post("/v1/connections/slack/import", headers={"Authorization": f"Bearer {MASTER_KEY}"}, json={
+    "user": "alice@acme.com",
+    "key": "chat",
+    "access_token": legacy.access_token,
+    "refresh_token": legacy.refresh_token,          # without it, Otari cannot refresh
+    "extra_tokens": {"user": legacy.user_token},    # Slack's user token
+    "extra_scopes": {"user": legacy.user_scopes},
+    "scopes": legacy.scopes,
+    "account_identifier": legacy.workspace_id,      # send it: reconnects update this row
+    "account_label": legacy.workspace_name,
+    "account_metadata": {"tenancy_id": legacy.workspace_id, "tenancy_name": legacy.workspace_name},
+    "expires_at": legacy.expires_at,                # null for a credential that does not expire
+})
+```
+
+It is idempotent on the account it names, so a backfill can be repeated or
+resumed after failing halfway. The app has to be configured here first: a
+token this deployment could never refresh or revoke is a trap rather than a
+migration. From then on the grant is refreshed, revoked on disconnect,
+reported when it dies and encrypted under its own key like any other.
+
 ## Encryption at rest
 
 Each connection's tokens are encrypted with a Fernet key of that row's own,

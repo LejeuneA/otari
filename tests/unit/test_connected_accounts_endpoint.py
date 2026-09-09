@@ -264,3 +264,32 @@ def test_shared_connections_over_http(tmp_path: Path, monkeypatch: pytest.Monkey
             "/v1/connections", headers=AUTH, params={"user": "bob", "include_shared": False}
         ).json()
         assert excluded["count"] == 0
+
+
+def test_import_takes_the_master_key_not_an_application_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An application that could import grants could plant one for a user who never consented."""
+    with _client(tmp_path, monkeypatch) as client:
+        created = client.post("/v1/keys", headers=AUTH, json={"name": "app"})
+        assert created.status_code in (200, 201), created.text
+        api_key = created.json().get("key") or created.json().get("api_key")
+        body = {"user": USER, "access_token": "gho_imported", "account_identifier": "octocat"}
+
+        refused = client.post(
+            "/v1/connections/github/import", headers={"Authorization": f"Bearer {api_key}"}, json=body
+        )
+        assert refused.status_code in (401, 403), refused.text
+        assert client.post("/v1/connections/github/import", json=body).status_code in (401, 403)
+
+        imported = client.post("/v1/connections/github/import", headers=AUTH, json=body)
+        assert imported.status_code == 200, imported.text
+        assert imported.json()["account_identifier"] == "octocat"
+
+        # From here it is an ordinary connection for the application's own key.
+        listed = client.get("/v1/connections", headers={"Authorization": f"Bearer {api_key}"}, params={"user": USER})
+        assert listed.json()["count"] == 1
+        token = client.get(
+            "/v1/connections/github/token", headers={"Authorization": f"Bearer {api_key}"}, params={"user": USER}
+        )
+        assert token.json()["token"] == "gho_imported"

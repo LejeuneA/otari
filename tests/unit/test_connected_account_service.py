@@ -34,6 +34,7 @@ from gateway.services.tenancy.connected_account_service import (
     ConnectedAccountService,
     ConnectedAccountUpdate,
     DatabaseStateStore,
+    ImportRequest,
     provider_config,
     redirect_uri,
     validate_return_url,
@@ -763,5 +764,96 @@ def test_a_token_carries_the_account_and_both_slack_scope_sets() -> None:
         assert token.account_metadata["tenancy_name"] == "Acme Corp"
         assert account.extra_scopes == {"user": ["search:read", "files:write"]}
         assert account.account_metadata["tenancy_name"] == "Acme Corp"
+
+    run(scenario)
+
+
+# -- importing a grant obtained elsewhere ---------------------------------------
+
+
+def test_an_imported_grant_behaves_like_a_connected_one() -> None:
+    """What a migration off an application's own OAuth needs: hand over, then use normally."""
+
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        imported = await service.import_grant(
+            workspace,
+            "slack",
+            ImportRequest(
+                user=ALICE,
+                key="chat",
+                access_token="xoxb-legacy",
+                refresh_token="refresh-legacy",
+                extra_tokens={"user": "xoxp-legacy"},
+                extra_scopes={"user": ["search:read"]},
+                scopes=["chat:write", "channels:read"],
+                account_identifier="T001",
+                account_label="Acme Corp",
+                account_metadata={"tenancy_id": "T001", "tenancy_name": "Acme Corp"},
+                label="Work Slack",
+                expires_at=datetime.now(UTC) + timedelta(days=30),
+            ),
+        )
+        assert (imported.provider, imported.key, imported.account_identifier) == ("slack", "chat", "T001")
+        assert imported.label == "Work Slack" and imported.status == "active"
+
+        # An ordinary connection from here on: resolvable, encrypted under its
+        # own key, and carrying both Slack tokens with their scopes apart.
+        token = await service.access_token_for_provider(workspace, ALICE, "slack", key="chat")
+        assert token is not None
+        assert token.token == "xoxb-legacy" and token.extra == {"user": "xoxp-legacy"}
+        assert token.extra_scopes == {"user": ["search:read"]}
+        assert token.account_metadata["tenancy_name"] == "Acme Corp"
+        row = (await session.execute(select(ConnectedAccount))).scalar_one()
+        assert row.encrypted_data_key is not None
+        with pytest.raises(SecretDecryptionError):
+            decrypt_secret(row.encrypted_access_token)
+
+        # Running the backfill twice updates the same row rather than adding one.
+        again = await service.import_grant(
+            workspace,
+            "slack",
+            ImportRequest(user=ALICE, key="chat", access_token="xoxb-second", account_identifier="T001"),
+        )
+        assert again.id == imported.id
+        assert (await service.list_accounts(workspace, ALICE)).count == 1
+        assert (await service.access_token(workspace, ALICE, imported.id)).token == "xoxb-second"
+
+    run(scenario)
+
+
+def test_an_imported_grant_can_be_shared_and_refuses_an_unconfigured_app() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        shared = await service.import_grant(
+            workspace,
+            "slack",
+            ImportRequest(user=ALICE, shared=True, access_token="xoxb-team", account_identifier="T001"),
+        )
+        assert (shared.owner, shared.connected_by) == ("workspace", ALICE)
+        assert (await service.access_token_for_provider(workspace, BOB, "slack")) is not None
+
+        # Nothing may be imported for an app this deployment cannot maintain:
+        # a token nobody can refresh or revoke is a trap, not a migration.
+        with pytest.raises(ConnectedAppNotConfiguredError):
+            await service.import_grant(workspace, "notion", ImportRequest(user=ALICE, access_token="secret"))
+
+    run(scenario)
+
+
+def test_an_imported_grant_without_a_refresh_token_still_reports_when_it_dies() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        imported = await service.import_grant(
+            workspace,
+            "slack",
+            ImportRequest(user=ALICE, access_token="xoxb-norefresh", account_identifier="T001", expires_at=None),
+        )
+        assert imported.has_refresh_token is False and imported.expires_at is None
+        reported = await service.report_rejected(workspace, ALICE, imported.id, reason="slack: token_revoked")
+        assert reported.status == "needs_reauth"
 
     run(scenario)

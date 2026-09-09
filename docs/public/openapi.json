@@ -4920,6 +4920,145 @@
         "title": "ImageGenerationRequest",
         "type": "object"
       },
+      "ImportRequest": {
+        "description": "A grant obtained elsewhere, handed to Otari to hold from now on.\n\nFor migrating an application that ran its own OAuth: it decrypts what it\nstored, posts it here, and stops maintaining it. Everything a flow would\nhave learned from the provider has to be supplied, because there is no\nconsent screen in this path to learn it from.",
+        "properties": {
+          "access_token": {
+            "description": "The credential itself.",
+            "minLength": 1,
+            "title": "Access Token",
+            "type": "string"
+          },
+          "account_identifier": {
+            "anyOf": [
+              {
+                "maxLength": 320,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the provider calls the account. Send it: it is how a later reconnect updates this row instead of adding a second one, and how expected_account_identifier can bind an upgrade to it.",
+            "title": "Account Identifier"
+          },
+          "account_label": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Label"
+          },
+          "account_metadata": {
+            "additionalProperties": true,
+            "description": "What you know about the account; a Slack workspace goes in tenancy_id.",
+            "title": "Account Metadata",
+            "type": "object"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a credential that does not expire.",
+            "title": "Expires At"
+          },
+          "extra_scopes": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Scopes of those secondary tokens.",
+            "title": "Extra Scopes",
+            "type": "object"
+          },
+          "extra_tokens": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Secondary tokens, keyed as the token endpoint returns them ('user').",
+            "title": "Extra Tokens",
+            "type": "object"
+          },
+          "key": {
+            "default": "",
+            "description": "Your partition of this provider.",
+            "maxLength": 64,
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The user's own label, if you kept one.",
+            "title": "Label"
+          },
+          "refresh_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Without one, Otari cannot refresh this grant: it will serve the token until it expires and then report needs_reauth. Send it if you have it.",
+            "title": "Refresh Token"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 256,
+            "title": "Scopes",
+            "type": "array"
+          },
+          "shared": {
+            "default": false,
+            "description": "Store it for the workspace instead of this user.",
+            "title": "Shared",
+            "type": "boolean"
+          },
+          "token_type": {
+            "default": "Bearer",
+            "maxLength": 50,
+            "title": "Token Type",
+            "type": "string"
+          },
+          "user": {
+            "description": "Your application's id for the user.",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "User",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user",
+          "access_token"
+        ],
+        "title": "ImportRequest",
+        "type": "object"
+      },
       "InFlightEntry": {
         "description": "One request the gateway is serving right now.\n\nField names match their ``UsageEntry`` counterparts so a request reads the\nsame way in flight as it does once it has settled. ``id`` is the exception: it\nis an ephemeral tracking id, not the id of the usage row this will become.",
         "properties": {
@@ -18250,6 +18389,70 @@
           }
         ],
         "summary": "Authorize Connection",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/connections/{provider}/import": {
+      "post": {
+        "description": "Hand Otari a grant obtained elsewhere, for migrating an application that ran its own OAuth.\n\nThe one way a credential enters Otari without a consent screen, so it takes\nthe master key rather than an application's API key: an application that\ncould import grants could plant one for a user who never consented. Run it\nas a migration, then let the application use the ordinary endpoints.\n\nIdempotent on the account it names, so a backfill can be resumed or\nrepeated. The app must be configured here, because from now on this\ndeployment is what refreshes and revokes it.",
+        "operationId": "import_connection_v1_connections__provider__import_post",
+        "parameters": [
+          {
+            "description": "Which app.",
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "description": "Which app.",
+              "pattern": "^(atlassian|github|google|hubspot|linear|microsoft|notion|salesforce|slack|typeform)$",
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectedAccountPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Import Connection",
         "tags": [
           "connections"
         ]

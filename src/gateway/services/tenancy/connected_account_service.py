@@ -274,6 +274,48 @@ class ConnectedAccountUpdate(BaseModel):
     label: Annotated[str | None, Field(max_length=64)] = None
 
 
+class ImportRequest(BaseModel):
+    """A grant obtained elsewhere, handed to Otari to hold from now on.
+
+    For migrating an application that ran its own OAuth: it decrypts what it
+    stored, posts it here, and stops maintaining it. Everything a flow would
+    have learned from the provider has to be supplied, because there is no
+    consent screen in this path to learn it from.
+    """
+
+    user: str = Field(min_length=1, max_length=MAX_EXTERNAL_USER_ID, description="Your application's id for the user.")
+    key: str = Field(default="", max_length=MAX_CONNECTION_KEY, description="Your partition of this provider.")
+    shared: bool = Field(default=False, description="Store it for the workspace instead of this user.")
+    access_token: str = Field(min_length=1, description="The credential itself.")
+    refresh_token: str | None = Field(
+        default=None,
+        description=(
+            "Without one, Otari cannot refresh this grant: it will serve the token until it expires and then "
+            "report needs_reauth. Send it if you have it."
+        ),
+    )
+    extra_tokens: dict[str, str] = Field(
+        default_factory=dict, description="Secondary tokens, keyed as the token endpoint returns them ('user')."
+    )
+    extra_scopes: dict[str, list[str]] = Field(default_factory=dict, description="Scopes of those secondary tokens.")
+    token_type: str = Field(default="Bearer", max_length=50)
+    expires_at: datetime | None = Field(default=None, description="Null for a credential that does not expire.")
+    scopes: list[str] = Field(default_factory=list, max_length=256)
+    account_identifier: str | None = Field(
+        default=None,
+        max_length=320,
+        description=(
+            "What the provider calls the account. Send it: it is how a later reconnect updates this row instead "
+            "of adding a second one, and how expected_account_identifier can bind an upgrade to it."
+        ),
+    )
+    account_label: str | None = Field(default=None, max_length=200)
+    account_metadata: dict[str, Any] = Field(
+        default_factory=dict, description="What you know about the account; a Slack workspace goes in tenancy_id."
+    )
+    label: str | None = Field(default=None, max_length=64, description="The user's own label, if you kept one.")
+
+
 class RejectedReport(BaseModel):
     """Why a consumer believes a credential is dead, for the record on the connection."""
 
@@ -995,6 +1037,72 @@ class ConnectedAccountService:
         first, second = (shared, own) if prefer_shared else (own, shared)
         return await first() or await second()
 
+    async def import_grant(self, workspace_id: uuid.UUID, provider: str, body: ImportRequest) -> ConnectedAccountPublic:
+        """Store a grant this deployment did not obtain, for a migration.
+
+        The one way a credential enters Otari without a consent screen, which
+        is why it is operator-gated at the route. Otherwise it is an ordinary
+        connection from here on: refreshed, revoked on disconnect, reported
+        when it dies, and encrypted under its own key like any other.
+
+        Idempotent on ``(owner, provider, key, account_identifier)``, so a
+        backfill that is run twice, or resumed after failing halfway, updates
+        rather than duplicates. The app must be configured here: importing a
+        token this deployment could never refresh or revoke would leave the
+        user with a credential nobody can maintain.
+
+        Raises:
+            ConnectedAppNotConfiguredError: If the app is not configured here.
+            SecretBoxUnavailableTenancyError: If tokens cannot be encrypted.
+
+        """
+        provider_config(self._config, provider)
+        if not _secret_box_ready():
+            raise SecretBoxUnavailableTenancyError()
+        end_user = await self.end_user(workspace_id, body.user, create=True)
+        assert end_user is not None
+        metadata: dict[str, Any] = {}
+        if "user" in body.extra_tokens:
+            # The shape ``_extra_tokens`` reads, so an imported Slack pair
+            # ends up stored exactly like one that came from a consent screen.
+            metadata["authed_user"] = {
+                "access_token": body.extra_tokens["user"],
+                "scope": " ".join(body.extra_scopes.get("user", [])),
+            }
+        tokens = TokenSet(
+            access_token=body.access_token,
+            refresh_token=body.refresh_token,
+            token_type=body.token_type,
+            expires_at=body.expires_at.timestamp() if body.expires_at else None,
+            scope=" ".join(body.scopes) if body.scopes else None,
+            metadata=metadata,
+        )
+        row = await self._upsert(
+            end_user,
+            provider,
+            tokens,
+            body.account_identifier,
+            body.account_label,
+            body.account_metadata,
+            key=body.key,
+            shared=body.shared,
+        )
+        # Anything the token set cannot carry is written straight onto the row:
+        # a label the user chose in the application, secondary tokens other
+        # than Slack's, and an expiry with no matching expires_in.
+        if body.label is not None:
+            row.label = body.label
+        if body.extra_scopes:
+            row.extra_scopes = {name: list(scopes) for name, scopes in body.extra_scopes.items()}
+        if body.extra_tokens:
+            row.encrypted_extra_tokens = self._encrypt_row(row, json.dumps(dict(body.extra_tokens)))
+        # ``_apply_tokens`` derives the expiry from the token set; an imported
+        # grant states it outright, including "does not expire" (None).
+        row.expires_at = body.expires_at
+        await self._db.commit()
+        await self._db.refresh(row)
+        return _public(row, None if body.shared else body.user, connected_by=body.user)
+
     async def report_rejected(
         self, workspace_id: uuid.UUID, user: str, account_id: uuid.UUID, *, reason: str | None = None
     ) -> ConnectedAccountPublic:
@@ -1104,6 +1212,12 @@ class ConnectedAccountService:
             account_label=row.account_label,
             account_metadata=dict(row.account_metadata or {}),
         )
+
+    def _encrypt_row(self, row: ConnectedAccount, plaintext: str) -> str:
+        """Encrypt a value under ``row``'s current key, for a field written after the tokens."""
+        if row.encrypted_data_key is None:
+            return encrypt_secret(plaintext)
+        return encrypt_under(plaintext, decrypt_secret(row.encrypted_data_key))
 
     def _decrypt_row(self, row: ConnectedAccount, ciphertext: str) -> str:
         """Decrypt one of ``row``'s secrets, through its own key when it has one.

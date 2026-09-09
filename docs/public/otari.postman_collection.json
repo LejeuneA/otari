@@ -1927,6 +1927,47 @@
           }
         },
         {
+          "name": "Import Connection",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"user\": \"string\",\n  \"access_token\": \"string\"\n}"
+            },
+            "description": "Hand Otari a grant obtained elsewhere, for migrating an application that ran its own OAuth.\n\nThe one way a credential enters Otari without a consent screen, so it takes\nthe master key rather than an application's API key: an application that\ncould import grants could plant one for a user who never consented. Run it\nas a migration, then let the application use the ordinary endpoints.\n\nIdempotent on the account it names, so a backfill can be resumed or\nrepeated. The app must be configured here, because from now on this\ndeployment is what refreshes and revokes it.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "connections",
+                ":provider",
+                "import"
+              ],
+              "raw": "{{baseUrl}}/v1/connections/:provider/import",
+              "variable": [
+                {
+                  "description": "path parameter",
+                  "key": "provider",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "Get Connection Token",
           "request": {
             "description": "The live credential for a user's account with an app, for code that calls the app itself.\n\nRefreshed first when it expires within a minute. Without ``connection_id``\nthis resolves the user's own connection in partition ``key``, then the one\nthe workspace shares. With it, that connection and no other: the endpoint\npicks only when you have not decided, which is what an application whose\nuser chose between two accounts needs. This is the one place a token\nleaves Otari, and it goes only to the application whose users these are:\nthe same application that registered the OAuth client. A user with no such\naccount answers 404.",
