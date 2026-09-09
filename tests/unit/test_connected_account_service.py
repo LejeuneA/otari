@@ -22,7 +22,13 @@ import gateway.models  # noqa: F401  (registers every table on the shared metada
 from gateway.core.config import GatewayConfig
 from gateway.models.entities import ConnectedAccount, ConnectedAccountOAuthState, EndUser
 from gateway.models.tenancy import Organization, Workspace
-from gateway.services.secret_box import generate_secret_key
+from gateway.services.secret_box import (
+    SecretDecryptionError,
+    decrypt_secret,
+    decrypt_under,
+    encrypt_secret,
+    generate_secret_key,
+)
 from gateway.services.tenancy import connected_account_service as svc
 from gateway.services.tenancy.connected_account_service import (
     ConnectedAccountService,
@@ -34,7 +40,9 @@ from gateway.services.tenancy.connected_account_service import (
     with_query,
 )
 from gateway.services.tenancy.errors import (
+    ConnectedAccountBindingError,
     ConnectedAccountExchangeError,
+    ConnectedAccountFlowNotFoundError,
     ConnectedAccountNotFoundError,
     ConnectedAccountReturnUrlError,
     ConnectedAccountStateInvalidError,
@@ -128,8 +136,13 @@ class FakeOAuthClient:
             raise OAuthError(msg)
         return self.identity
 
+    refuse_refresh = False
+
     async def refresh_token(self, refresh_token: str) -> TokenSet:
         self.refreshed.append(refresh_token)
+        if self.refuse_refresh:
+            msg = "invalid_grant: token revoked"
+            raise OAuthError(msg)
         return TokenSet(access_token="refreshed-access", refresh_token=None, expires_in=3600, scope=self.tokens.scope)
 
     async def revoke_token(self, token: str) -> bool:
@@ -145,6 +158,7 @@ class Service(ConnectedAccountService):
     ) -> None:
         super().__init__(db, config)
         self.fake: FakeOAuthClient | None = None
+        self.asked_scopes: list[str] | None = None
         self._fake_tokens, self._fake_identity = tokens, identity
 
     def _client(
@@ -154,10 +168,15 @@ class Service(ConnectedAccountService):
         end_user_id: uuid.UUID,
         scopes: list[str] | None = None,
         return_url: str | None = None,
+        store: DatabaseStateStore | None = None,
     ) -> Any:
         provider_config(self._config, provider, scopes)  # still refuses an unconfigured app
+        # The store the service built carries the flow's intent (its id, the
+        # partition, whether it is shared, the account it is bound to), so the
+        # fake must use it rather than making its own.
+        self.asked_scopes = scopes
         self.fake = FakeOAuthClient(
-            DatabaseStateStore(self._db, end_user_id=end_user_id, provider=provider, return_url=return_url),
+            store or DatabaseStateStore(self._db, end_user_id=end_user_id, provider=provider, return_url=return_url),
             tokens=self._fake_tokens,
             identity=self._fake_identity,
         )
@@ -389,3 +408,360 @@ def test_token_helpers() -> None:
     svc._apply_tokens(row, TokenSet(access_token="a", scope="x y", expires_in=60), keep_refresh=False)
     assert row.scopes == ["x", "y"] and row.expires_at is not None and row.encrypted_refresh_token is None
     assert json.loads('{"user": "u"}') == {"user": "u"}
+
+
+# -- one provider, several connections -----------------------------------------
+
+
+def test_a_key_partitions_one_provider_into_separate_connections() -> None:
+    """An application whose product shows Gmail and Drive apart connects Google twice."""
+
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        config = configured(google={"client_id": "g-id", "client_secret": "g-secret"})
+        service = Service(session, config, tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        mail = await _authorize_and_complete(service, workspace, ALICE, "google", key="mail")
+        service._fake_tokens = TokenSet(access_token="drive-token", scope="drive.readonly")
+        drive = await _authorize_and_complete(service, workspace, ALICE, "google", key="drive")
+
+        assert mail.id != drive.id and (mail.key, drive.key) == ("mail", "drive")
+        assert (await service.list_accounts(workspace, ALICE)).count == 2
+        assert (await service.list_accounts(workspace, ALICE, key="drive")).count == 1
+
+        # Each partition resolves its own credential, and disconnecting one
+        # leaves the other alone: the two are separate as far as the
+        # application is concerned, even though one provider issued both.
+        mail_token = await service.access_token_for_provider(workspace, ALICE, "google", key="mail")
+        drive_token = await service.access_token_for_provider(workspace, ALICE, "google", key="drive")
+        assert mail_token is not None and mail_token.token == "xoxb-bot"
+        assert drive_token is not None and drive_token.token == "drive-token"
+        await service.disconnect(workspace, ALICE, drive.id)
+        assert (await service.list_accounts(workspace, ALICE)).count == 1
+        assert await service.access_token_for_provider(workspace, ALICE, "google", key="mail") is not None
+
+    run(scenario)
+
+
+def test_scope_mode_add_asks_for_the_union_with_what_is_already_granted() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        await _authorize_and_complete(service, workspace, ALICE, "slack", scopes=["chat:write", "channels:read"])
+
+        # An upgrade that names only the new scope would drop the two the user
+        # has already consented to at most providers, so "add" unions them.
+        await service.authorize(workspace, ALICE, "slack", scopes=["files:read"], scope_mode="add")
+        assert service.asked_scopes == ["chat:write", "channels:read", "files:read"]
+
+        # "exact" stays literal, which is what a scope *reduction* needs.
+        await service.authorize(workspace, ALICE, "slack", scopes=["files:read"], scope_mode="exact")
+        assert service.asked_scopes == ["files:read"]
+
+        # Nothing granted yet in this partition: nothing to union with.
+        await service.authorize(workspace, ALICE, "slack", key="other", scopes=["files:read"], scope_mode="add")
+        assert service.asked_scopes == ["files:read"]
+
+    run(scenario)
+
+
+def test_a_flow_bound_to_an_account_refuses_a_different_one() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        started = await service.authorize(workspace, ALICE, "slack", expected_account_identifier="U-OTHER")
+        state = started.authorization_url.rsplit("state=", 1)[1]
+        with pytest.raises(ConnectedAccountBindingError, match="U-OTHER"):
+            await service.complete(state=state, code="good-code")
+        # Nothing stored: an upgrade that landed on another account would leave
+        # the credential the application resolves un-upgraded.
+        assert (await service.list_accounts(workspace, ALICE)).count == 0
+        flow = await service.flow(workspace, started.flow_id)
+        assert (flow.status, flow.reason) == ("failed", "binding_mismatch")
+
+        # The account it was started for goes through.
+        ok = await _authorize_and_complete(service, workspace, ALICE, "slack", expected_account_identifier="U1")
+        assert ok.account_identifier == "U1"
+
+    run(scenario)
+
+
+# -- shared connections ---------------------------------------------------------
+
+
+def test_a_shared_connection_serves_every_user_and_the_owner_is_the_workspace() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        shared = await _authorize_and_complete(service, workspace, ALICE, "slack", shared=True)
+        assert (shared.owner, shared.user, shared.connected_by) == ("workspace", None, ALICE)
+
+        # Bob never connected anything, and resolves it anyway.
+        token = await service.access_token_for_provider(workspace, BOB, "slack")
+        assert token is not None and token.token == "xoxb-bot"
+        listed = await service.list_accounts(workspace, BOB)
+        assert listed.count == 1 and listed.data[0].owner == "workspace"
+        assert listed.data[0].connected_by == ALICE
+        assert (await service.list_accounts(workspace, BOB, include_shared=False)).count == 0
+        assert {app.provider: app.connected_accounts for app in await service.list_apps(workspace, BOB)}["slack"] == 1
+
+        # Another workspace sees none of it.
+        other = await make_workspace(session)
+        assert await service.access_token_for_provider(other, BOB, "slack") is None
+
+    run(scenario)
+
+
+def test_a_users_own_connection_wins_over_the_shared_one() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        await _authorize_and_complete(service, workspace, ALICE, "slack", shared=True)
+        service._fake_tokens = TokenSet(access_token="bobs-own", scope="chat:write")
+        service._fake_identity = IdentityProfile(provider="slack", subject="U2", name="Bob")
+        own = await _authorize_and_complete(service, workspace, BOB, "slack")
+
+        assert own.owner == "user"
+        token = await service.access_token_for_provider(workspace, BOB, "slack")
+        assert token is not None and token.token == "bobs-own"
+        # Alice, who has no personal Slack, still gets the shared one.
+        alice_token = await service.access_token_for_provider(workspace, ALICE, "slack")
+        assert alice_token is not None and alice_token.token == "xoxb-bot"
+
+    run(scenario)
+
+
+# -- flows ----------------------------------------------------------------------
+
+
+def test_a_flow_reports_pending_then_connected_and_expires_on_time() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        started = await service.authorize(workspace, ALICE, "slack", key="mail")
+        pending = await service.flow(workspace, started.flow_id)
+        assert (pending.status, pending.connection_id, pending.key, pending.user) == ("pending", None, "mail", ALICE)
+
+        state = started.authorization_url.rsplit("state=", 1)[1]
+        account, _ = await service.complete(state=state, code="good-code")
+        done = await service.flow(workspace, started.flow_id)
+        assert (done.status, done.connection_id) == ("connected", account.id)
+
+        # A flow nobody finished reads as expired once its link has died,
+        # without anything having to sweep it.
+        stale = await service.authorize(workspace, ALICE, "slack")
+        row = (
+            await session.execute(
+                select(ConnectedAccountOAuthState).where(ConnectedAccountOAuthState.flow_id == stale.flow_id)
+            )
+        ).scalar_one()
+        row.created_at = datetime.now(UTC) - timedelta(minutes=11)
+        await session.commit()
+        assert (await service.flow(workspace, stale.flow_id)).status == "expired"
+
+        # Another workspace cannot ask about this one's flows.
+        with pytest.raises(ConnectedAccountFlowNotFoundError):
+            await service.flow(await make_workspace(session), started.flow_id)
+
+    run(scenario)
+
+
+def test_a_denied_consent_is_recorded_on_the_flow() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        started = await service.authorize(workspace, ALICE, "slack", return_url="https://myapp.test/back")
+        state = started.authorization_url.rsplit("state=", 1)[1]
+        assert await service.return_url_for_state(state, failure="access_denied") == "https://myapp.test/back"
+        flow = await service.flow(workspace, started.flow_id)
+        assert (flow.status, flow.reason) == ("failed", "access_denied")
+
+    run(scenario)
+
+
+# -- dead credentials -----------------------------------------------------------
+
+
+def test_a_rejected_credential_recovers_through_one_forced_refresh() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        account = await _authorize_and_complete(service, workspace, ALICE, "slack")
+        # The expiry says the token is fine; the provider disagrees.
+        reported = await service.report_rejected(workspace, ALICE, account.id, reason="slack: token_revoked")
+        assert reported.status == "active"
+        assert service.fake is not None and service.fake.refreshed == ["refresh-1"]
+        assert (await service.access_token(workspace, ALICE, account.id)).token == "refreshed-access"
+
+    run(scenario)
+
+
+def test_a_credential_that_cannot_be_refreshed_is_marked_for_reconnection() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        account = await _authorize_and_complete(service, workspace, ALICE, "slack")
+        assert service.fake is not None
+        FakeOAuthClient.refuse_refresh = True
+        try:
+            reported = await service.report_rejected(workspace, ALICE, account.id, reason="slack: token_revoked")
+            assert reported.status == "needs_reauth" and reported.invalid_reason == "slack: token_revoked"
+            # The row stays, so the application can see it and prompt, and a
+            # listing carries the reason rather than a hole where a
+            # connection used to be.
+            listed = await service.list_accounts(workspace, ALICE)
+            assert listed.count == 1 and listed.data[0].status == "needs_reauth"
+
+            # A refusal on the ordinary refresh path marks it the same way.
+            row = (await session.execute(select(ConnectedAccount))).scalar_one()
+            row.status, row.expires_at = "active", datetime.now(UTC) + timedelta(seconds=10)
+            await session.commit()
+            with pytest.raises(ConnectedAccountExchangeError):
+                await service.access_token(workspace, ALICE, account.id)
+            assert (await service.get_account(workspace, ALICE, account.id)).status == "needs_reauth"
+        finally:
+            FakeOAuthClient.refuse_refresh = False
+
+        # Reconnecting brings it back to life.
+        again = await _authorize_and_complete(service, workspace, ALICE, "slack")
+        assert again.id == account.id and again.status == "active" and again.invalid_reason is None
+
+    run(scenario)
+
+
+def test_report_rejected_without_a_refresh_token_marks_it_directly() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=TokenSet(access_token="gho_x", scope="repo"), identity=None)
+        account = await _authorize_and_complete(service, workspace, ALICE, "github")
+        reported = await service.report_rejected(workspace, ALICE, account.id, reason=None)
+        assert reported.status == "needs_reauth"
+        assert reported.invalid_reason == "the provider rejected the credential"
+        assert service.fake is not None and service.fake.refreshed == []
+
+    run(scenario)
+
+
+# -- deletion -------------------------------------------------------------------
+
+
+def test_forgetting_a_user_revokes_and_deletes_everything_of_theirs() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        await _authorize_and_complete(service, workspace, ALICE, "slack")
+        service._fake_tokens = TokenSet(access_token="gho_x", scope="repo")
+        service._fake_identity = IdentityProfile(provider="github", subject="gh-1", username="alice")
+        await _authorize_and_complete(service, workspace, ALICE, "github")
+        shared = await _authorize_and_complete(service, workspace, BOB, "slack", shared=True)
+
+        removed = await service.forget_user(workspace, ALICE)
+        assert removed == 2
+        assert service.fake is not None and "gho_x" in service.fake.revoked
+        assert (await session.execute(select(EndUser).where(EndUser.external_id == ALICE))).scalar_one_or_none() is None
+        # Her pending flows went too — explicitly, not by trusting a cascade
+        # SQLite would not run. The workspace's shared connection stayed: it
+        # is not hers to delete, and Bob's flow row belongs to him.
+        left = (await session.execute(select(ConnectedAccountOAuthState))).scalars().all()
+        assert [row.provider for row in left] == ["slack"]
+        assert (await service.list_accounts(workspace, BOB)).data[0].id == shared.id
+        assert await service.forget_user(workspace, "never-seen") == 0
+
+    run(scenario)
+
+
+# -- encryption at rest ---------------------------------------------------------
+
+
+def test_tokens_are_encrypted_under_the_rows_own_key() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        account = await _authorize_and_complete(service, workspace, ALICE, "slack")
+        row = (await session.execute(select(ConnectedAccount))).scalar_one()
+
+        # The row carries its own wrapped key, and its ciphertext cannot be
+        # read with the deployment key: that key opens the envelope, not the
+        # credential. One disclosed row key is worth one account.
+        assert row.encrypted_data_key is not None
+        with pytest.raises(SecretDecryptionError):
+            decrypt_secret(row.encrypted_access_token)
+        data_key = decrypt_secret(row.encrypted_data_key)
+        assert decrypt_under(row.encrypted_access_token, data_key) == "xoxb-bot"
+
+        # Two accounts never share an envelope, and a refresh re-keys the row.
+        service._fake_identity = IdentityProfile(provider="slack", subject="U2", name="Bob")
+        other = await _authorize_and_complete(service, workspace, BOB, "slack")
+        rows = {r.id: r for r in (await session.execute(select(ConnectedAccount))).scalars()}
+        assert rows[account.id].encrypted_data_key != rows[other.id].encrypted_data_key
+        before = rows[account.id].encrypted_data_key
+        row = rows[account.id]
+        row.expires_at = datetime.now(UTC) + timedelta(seconds=10)
+        await session.commit()
+        refreshed = await service.access_token(workspace, ALICE, account.id)
+        assert refreshed.token == "refreshed-access"
+        await session.refresh(row)
+        assert row.encrypted_data_key != before
+        # The kept refresh token was re-encrypted under the new key, not left
+        # behind under the old one.
+        assert (await service.access_token(workspace, ALICE, account.id)).token == "refreshed-access"
+
+    run(scenario)
+
+
+def test_a_row_written_before_the_envelope_is_still_readable() -> None:
+    """Rows encrypted with the deployment key directly keep working, and re-envelope on write."""
+
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        service = Service(session, configured(), tokens=SLACK_TOKENS, identity=SLACK_IDENTITY)
+        account = await _authorize_and_complete(service, workspace, ALICE, "slack")
+        row = (await session.execute(select(ConnectedAccount))).scalar_one()
+        row.encrypted_data_key = None
+        row.encrypted_access_token = encrypt_secret("legacy-token")
+        row.encrypted_refresh_token = encrypt_secret("legacy-refresh")
+        row.encrypted_extra_tokens = encrypt_secret(json.dumps({"user": "legacy-user"}))
+        row.expires_at = None
+        await session.commit()
+
+        token = await service.access_token(workspace, ALICE, account.id)
+        assert token.token == "legacy-token" and token.extra == {"user": "legacy-user"}
+
+        row.expires_at = datetime.now(UTC) + timedelta(seconds=10)
+        await session.commit()
+        assert (await service.access_token(workspace, ALICE, account.id)).token == "refreshed-access"
+        await session.refresh(row)
+        assert row.encrypted_data_key is not None  # re-enveloped on the way through
+
+    run(scenario)
+
+
+# -- what a consumer needs to act ----------------------------------------------
+
+
+def test_a_token_carries_the_account_and_both_slack_scope_sets() -> None:
+    async def scenario(session: AsyncSession) -> None:
+        workspace = await make_workspace(session)
+        tokens = TokenSet(
+            access_token="xoxb-bot",
+            refresh_token="refresh-1",
+            expires_in=3600,
+            scope="chat:write,channels:read",
+            metadata={"authed_user": {"id": "U1", "access_token": "xoxp-user", "scope": "search:read,files:write"}},
+        )
+        service = Service(session, configured(), tokens=tokens, identity=SLACK_IDENTITY)
+        account = await _authorize_and_complete(service, workspace, ALICE, "slack", key="chat")
+        token = await service.access_token(workspace, ALICE, account.id)
+
+        # Everything a Slack consumer needs in one answer: which token is
+        # which, what each may do, and the workspace the pair belongs to.
+        assert (token.connection_id, token.key, token.provider) == (account.id, "chat", "slack")
+        assert token.token == "xoxb-bot" and token.extra["user"] == "xoxp-user"
+        assert token.scopes == ["chat:write", "channels:read"]
+        assert token.extra_scopes == {"user": ["search:read", "files:write"]}
+        assert token.account_identifier == "U1"
+        assert token.account_metadata["tenancy_id"] == "T001"
+        assert token.account_metadata["tenancy_name"] == "Acme Corp"
+        assert account.extra_scopes == {"user": ["search:read", "files:write"]}
+        assert account.account_metadata["tenancy_name"] == "Acme Corp"
+
+    run(scenario)

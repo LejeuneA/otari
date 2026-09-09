@@ -794,6 +794,8 @@ class OrganizationPricingOverlapError(TenancyConflictError):
             f"An override for '{model_key}' already covers part of that period ({existing_period}). "
             "Change this period, or edit the existing override instead."
         )
+
+
 class InvitationNotFoundError(TenancyNotFoundError):
     """No invitation matches the token or id given.
 
@@ -1188,6 +1190,27 @@ class ConnectedAccountLimitReachedError(TenancyConflictError):
         super().__init__(f"A user may hold at most {limit} connected accounts")
 
 
+class ConnectedAccountBindingError(TenancyValidationError):
+    """The consent screen returned a different account than the flow was started for.
+
+    Nothing is stored: a scope upgrade that lands on another account would
+    leave the credential the application actually resolves un-upgraded, and a
+    multi-account user would connect an account they were not asked about. The
+    message names both sides because the user has to pick differently to fix it.
+    """
+
+    def __init__(self, expected: str, actual: str | None) -> None:
+        super().__init__(
+            f"This connection was started for {expected!r} but the account authorized was "
+            f"{actual or 'not identifiable'}; connect again and pick {expected!r}."
+        )
+
+
+class ConnectedAccountFlowNotFoundError(TenancyNotFoundError):
+    def __init__(self, flow_id: object):
+        super().__init__(f"Connection flow {flow_id} not found")
+
+
 __all__ = [
     "BootstrapOperatorProtectedError",
     "CurrentPasswordIncorrectError",
@@ -1257,7 +1280,9 @@ __all__ = [
     "PasswordNotSetError",
     "PasswordPolicyError",
     "ResetTokenInvalidError",
+    "ConnectedAccountBindingError",
     "ConnectedAccountExchangeError",
+    "ConnectedAccountFlowNotFoundError",
     "ConnectedAccountLimitReachedError",
     "ConnectedAccountNotFoundError",
     "ConnectedAccountReturnUrlError",

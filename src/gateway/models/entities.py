@@ -1986,24 +1986,76 @@ class ConnectedAccount(Base):
     __tablename__ = "connected_accounts"
     __table_args__ = (
         UniqueConstraint(
-            "end_user_id", "provider", "account_identifier", name="uq_connected_accounts_end_user_provider_account"
+            "end_user_id",
+            "provider",
+            "connection_key",
+            "account_identifier",
+            name="uq_connected_accounts_end_user_provider_key_account",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "provider",
+            "connection_key",
+            "account_identifier",
+            name="uq_connected_accounts_workspace_provider_key_account",
+        ),
+        CheckConstraint(
+            "(end_user_id IS NULL) <> (workspace_id IS NULL)",
+            name="ck_connected_accounts_one_owner",
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    end_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("end_users.id", ondelete="CASCADE"), nullable=False, index=True
+    #: The owner when this grant is one person's. Exactly one of this and
+    #: ``workspace_id`` is set: a grant belongs to a user or to a workspace.
+    end_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("end_users.id", ondelete="CASCADE"), default=None, index=True
+    )
+    #: The owner when the grant is shared: every user of the application in
+    #: this workspace resolves it, the way one team credential serves a team.
+    #: Consent still came from a person, recorded in ``connected_by_end_user_id``.
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workspace.id", ondelete="CASCADE"), default=None, index=True
+    )
+    #: Who consented, kept for a shared grant so an operator can see whose
+    #: account the workspace is acting through. SET NULL rather than CASCADE:
+    #: losing the person must not silently delete the team's credential.
+    connected_by_end_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("end_users.id", ondelete="SET NULL"), default=None
     )
     provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    #: The application's own partition of one provider, empty when it makes no
+    #: distinction. An application whose product shows Gmail and Google Drive
+    #: as separate things connects one Google provider twice under two keys,
+    #: each with its own scopes, its own account and its own disconnect.
+    connection_key: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default="")
     account_identifier: Mapped[str | None] = mapped_column(String(320), default=None)
     account_label: Mapped[str | None] = mapped_column(String(200), default=None)
     label: Mapped[str | None] = mapped_column(String(64), default=None)
+    #: ``active`` or ``needs_reauth``: a grant the provider has rejected, or
+    #: whose refresh permanently failed, stays as a row so the application can
+    #: see it and prompt the user rather than finding a 404 where a
+    #: connection used to be.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", server_default="active")
+    invalid_reason: Mapped[str | None] = mapped_column(String(200), default=None)
+    invalid_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), default=None)
     encrypted_access_token: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted_refresh_token: Mapped[str | None] = mapped_column(Text, default=None)
     encrypted_extra_tokens: Mapped[str | None] = mapped_column(Text, default=None)
+    #: The row's own Fernet key, itself encrypted with ``OTARI_SECRET_KEY``
+    #: (envelope encryption). The tokens above are encrypted with it, so
+    #: rotating ``OTARI_SECRET_KEY`` rewraps one short value per row instead of
+    #: re-encrypting every credential, and a disclosed row key is worth one
+    #: account. NULL on rows written before the envelope, which are read with
+    #: the deployment key directly.
+    encrypted_data_key: Mapped[str | None] = mapped_column(Text, default=None)
     token_type: Mapped[str] = mapped_column(String(50), nullable=False, default="Bearer")
     expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), default=None)
     scopes: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    #: Scopes of the secondary tokens in ``encrypted_extra_tokens``, keyed the
+    #: same way: Slack's user token is granted its own scopes, and a consumer
+    #: has to know which of the two tokens may do what.
+    extra_scopes: Mapped[dict[str, list[str]] | None] = mapped_column(JSON, default=None)
     account_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime(), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
@@ -2030,13 +2082,36 @@ class ConnectedAccountOAuthState(Base):
     __tablename__ = "connected_account_oauth_states"
 
     state: Mapped[str] = mapped_column(String(128), primary_key=True)
+    #: The half of a flow an application may hold and ask about. The ``state``
+    #: is the browser's secret and is never handed back to the caller; this is
+    #: what ``GET /v1/connections/flows/{flow_id}`` answers on, so an
+    #: application can tell "the user finished" from "the user closed the
+    #: window" without being able to replay the flow.
+    flow_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True, default=uuid.uuid4)
     end_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("end_users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    #: The partition, provider scopes and ownership this flow will write with,
+    #: all recorded when the application started it so the callback decides
+    #: nothing from the browser's query.
+    connection_key: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default="")
+    shared: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=false())
+    #: When set, the grant is refused unless the account the provider names
+    #: matches: consent screens let a user pick, and a scope upgrade must land
+    #: on the account it was started for.
+    expected_account_identifier: Mapped[str | None] = mapped_column(String(320), default=None)
     redirect_uri: Mapped[str] = mapped_column(Text, nullable=False)
     return_url: Mapped[str | None] = mapped_column(Text, default=None)
     encrypted_code_verifier: Mapped[str | None] = mapped_column(Text, default=None)
     requested_scopes: Mapped[list[str] | None] = mapped_column(JSON, default=None)
+    #: ``pending`` until the callback resolves it, then ``connected`` or
+    #: ``failed`` with a reason. Kept past consumption (see the sweep) so a
+    #: poller that arrives late still learns the outcome.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", server_default="pending")
+    connected_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("connected_accounts.id", ondelete="SET NULL"), default=None
+    )
+    failure_reason: Mapped[str | None] = mapped_column(String(200), default=None)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime(), default=lambda: datetime.now(UTC))
     consumed_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), default=None)

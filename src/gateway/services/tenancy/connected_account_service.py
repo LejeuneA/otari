@@ -33,7 +33,7 @@ import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlencode, urlsplit
 
 from apron_auth import OAuthClient
@@ -51,7 +51,7 @@ from apron_auth.providers import salesforce as apron_salesforce
 from apron_auth.providers import slack as apron_slack
 from apron_auth.providers import typeform as apron_typeform
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.config import CONNECTED_APP_PROVIDERS, GatewayConfig
@@ -61,10 +61,15 @@ from gateway.services.secret_box import (
     SecretBoxUnavailableError,
     SecretDecryptionError,
     decrypt_secret,
+    decrypt_under,
     encrypt_secret,
+    encrypt_under,
+    generate_data_key,
 )
 from gateway.services.tenancy.errors import (
+    ConnectedAccountBindingError,
     ConnectedAccountExchangeError,
+    ConnectedAccountFlowNotFoundError,
     ConnectedAccountLimitReachedError,
     ConnectedAccountNotFoundError,
     ConnectedAccountReturnUrlError,
@@ -82,6 +87,15 @@ REFRESH_LEEWAY = timedelta(seconds=60)
 MAX_CONNECTED_ACCOUNTS_PER_USER = 50
 #: The ``user`` field on a request, and the external id here, share this bound.
 MAX_EXTERNAL_USER_ID = 255
+#: An application's own partition of a provider (``key``), long enough for a
+#: readable name like ``google:drive`` and short enough to index.
+MAX_CONNECTION_KEY = 64
+#: A resolved flow is answerable this long after it started, so an application
+#: that polls slowly (or reloads its page) still learns the outcome. Longer
+#: than ``OAUTH_STATE_TTL`` on purpose: the row stays queryable well after it
+#: has stopped being usable, since consumption and expiry are what make it
+#: unusable, not the sweep.
+FLOW_RETENTION = timedelta(hours=1)
 
 _PRESETS: dict[str, Any] = {
     "atlassian": apron_atlassian.preset,
@@ -138,12 +152,31 @@ class ConnectedAccountPublic(BaseModel):
     """A connected account without its tokens."""
 
     id: uuid.UUID
-    user: str = Field(description="The application's id for the user who connected it.")
+    user: str | None = Field(
+        description="The application's id for the user who owns it; null for a connection shared by the workspace."
+    )
+    owner: Literal["user", "workspace"] = Field(description="Whose credential this is.")
+    connected_by: str | None = Field(
+        default=None, description="Who consented, for a shared connection: the application's id for that user."
+    )
     provider: str
+    key: str = Field(description="The application's partition of this provider, empty when it makes no distinction.")
     account_identifier: str | None
     account_label: str | None = Field(description="What the provider calls the account: a name, an email, a workspace.")
     label: str | None = Field(description="The user's own label, when set.")
+    status: Literal["active", "needs_reauth"] = Field(
+        description="'needs_reauth' once the provider has rejected the grant: ask the user to connect again."
+    )
+    invalid_reason: str | None = Field(default=None, description="Why it needs reconnecting, when it does.")
     scopes: list[str]
+    extra_scopes: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Scopes of the secondary tokens, keyed as they are on the credential (Slack: 'user').",
+    )
+    account_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="What the provider says about the account: subject, email, name, workspace id and name.",
+    )
     expires_at: datetime | None
     has_refresh_token: bool
     created_at: datetime
@@ -157,10 +190,45 @@ class ConnectedAccountsPublic(BaseModel):
 
 class AuthorizeRequest(BaseModel):
     user: str = Field(min_length=1, max_length=MAX_EXTERNAL_USER_ID, description="Your application's id for the user.")
+    key: str = Field(
+        default="",
+        max_length=MAX_CONNECTION_KEY,
+        description=(
+            "Your own partition of this provider, when one connection per provider is not enough: an application "
+            "that shows Gmail and Google Drive as separate things connects Google twice, under keys of its "
+            "choosing, each with its own scopes, account and disconnect. Leave empty when the provider is the "
+            "whole story."
+        ),
+    )
     scopes: list[str] | None = Field(
         default=None,
         max_length=64,
         description="Scopes to ask for instead of the deployment's defaults for this app.",
+    )
+    scope_mode: Literal["exact", "add"] = Field(
+        default="exact",
+        description=(
+            "How 'scopes' combines with what the user already granted here. 'exact' asks for exactly that list; "
+            "'add' asks for it together with the scopes the existing connection holds, which is what a scope "
+            "upgrade wants — asking for only the new ones drops the rest at most providers."
+        ),
+    )
+    expected_account_identifier: str | None = Field(
+        default=None,
+        max_length=320,
+        description=(
+            "Refuse the grant unless the provider names this account. Pass the 'account_identifier' of the "
+            "connection being re-authorized so a user who picks a different account on the consent screen is "
+            "told, instead of quietly ending up with two."
+        ),
+    )
+    shared: bool = Field(
+        default=False,
+        description=(
+            "Store the grant for the whole workspace instead of this user: every user of your application in "
+            "this workspace then resolves it, and the token endpoint falls back to it when a user has none of "
+            "their own. Consent still comes from this user, and they are recorded as having given it."
+        ),
     )
     return_url: str | None = Field(
         default=None,
@@ -175,22 +243,72 @@ class AuthorizeRequest(BaseModel):
 
 class AuthorizePublic(BaseModel):
     authorization_url: str = Field(description="Send the user's browser here; Otari handles the rest of the flow.")
+    flow_id: uuid.UUID = Field(
+        description=(
+            "This flow, for GET /v1/connections/flows/{flow_id}: how it ended, once it has. Safe to hold and to "
+            "put in your own page's URL — it is not the OAuth state and cannot be used to complete the flow."
+        )
+    )
     expires_at: datetime = Field(description="When the link stops working; start again after that.")
+
+
+class FlowPublic(BaseModel):
+    """How one connect flow is going, for an application that opened a popup and is waiting."""
+
+    flow_id: uuid.UUID
+    provider: str
+    key: str
+    user: str
+    status: Literal["pending", "connected", "failed", "expired"] = Field(
+        description=(
+            "'pending' while the user is still at the provider, 'connected' with a connection_id once stored, "
+            "'failed' with a reason, 'expired' if the link timed out unused."
+        )
+    )
+    connection_id: uuid.UUID | None = Field(default=None, description="The connection, once there is one.")
+    reason: str | None = Field(default=None, description="Why it failed, when it did.")
+    expires_at: datetime = Field(description="When the link stops working.")
 
 
 class ConnectedAccountUpdate(BaseModel):
     label: Annotated[str | None, Field(max_length=64)] = None
 
 
-class AccessToken(BaseModel):
-    """A live credential for in-process consumers; never leaves the gateway."""
+class RejectedReport(BaseModel):
+    """Why a consumer believes a credential is dead, for the record on the connection."""
 
+    reason: Annotated[str | None, Field(max_length=200)] = Field(
+        default=None, description="What the provider said, e.g. 'slack: token_revoked'. Shown as invalid_reason."
+    )
+
+
+class AccessToken(BaseModel):
+    """A live credential, with enough about the account to act on it.
+
+    Everything a consumer needs to build a provider client in one answer: the
+    token, the secondary tokens next to it, which scopes each of them holds,
+    and who the account is. A Slack consumer needs exactly this — a bot token,
+    a user token, the two scope sets apart, and the workspace the pair belongs
+    to (``account_metadata['tenancy_id']`` and ``['tenancy_name']``).
+    """
+
+    connection_id: uuid.UUID
     provider: str
+    key: str
     token: str
     token_type: str
     expires_at: datetime | None
+    scopes: list[str] = Field(default_factory=list, description="Scopes the primary token holds.")
     extra: dict[str, str] = Field(
         default_factory=dict, description="Secondary tokens, e.g. Slack's user token under 'user'."
+    )
+    extra_scopes: dict[str, list[str]] = Field(
+        default_factory=dict, description="Scopes of those secondary tokens, keyed the same way."
+    )
+    account_identifier: str | None = None
+    account_label: str | None = None
+    account_metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Who the provider says the account is; a Slack workspace id lives here."
     )
 
 
@@ -302,19 +420,36 @@ class DatabaseStateStore:
     """
 
     def __init__(
-        self, db: AsyncSession, *, end_user_id: uuid.UUID, provider: str, return_url: str | None = None
+        self,
+        db: AsyncSession,
+        *,
+        end_user_id: uuid.UUID,
+        provider: str,
+        return_url: str | None = None,
+        flow_id: uuid.UUID | None = None,
+        connection_key: str = "",
+        shared: bool = False,
+        expected_account_identifier: str | None = None,
     ) -> None:
         self._db = db
         self._end_user_id = end_user_id
         self._provider = provider
         self._return_url = return_url
+        #: Minted by the caller so it can be answered to the application
+        #: before the browser has been anywhere.
+        self.flow_id = flow_id or uuid.uuid4()
+        self._connection_key = connection_key
+        self._shared = shared
+        self._expected_account_identifier = expected_account_identifier
 
     async def save(self, state: OAuthPendingState) -> None:
         now = datetime.now(UTC)
-        # Opportunistic sweep of stale rows, so the table does not grow with
-        # every abandoned consent screen.
+        # Opportunistic sweep, so the table does not grow with every abandoned
+        # consent screen. Rows are kept past their usable life (FLOW_RETENTION)
+        # so a slow poller still learns how its flow ended; being unexpired is
+        # checked on use, not here.
         await self._db.execute(
-            delete(ConnectedAccountOAuthState).where(ConnectedAccountOAuthState.created_at < now - OAUTH_STATE_TTL)
+            delete(ConnectedAccountOAuthState).where(ConnectedAccountOAuthState.created_at < now - FLOW_RETENTION)
         )
         try:
             verifier = encrypt_secret(state.code_verifier) if state.code_verifier else None
@@ -324,8 +459,12 @@ class DatabaseStateStore:
         self._db.add(
             ConnectedAccountOAuthState(
                 state=state.state,
+                flow_id=self.flow_id,
                 end_user_id=self._end_user_id,
                 provider=self._provider,
+                connection_key=self._connection_key,
+                shared=self._shared,
+                expected_account_identifier=self._expected_account_identifier,
                 redirect_uri=state.redirect_uri,
                 return_url=self._return_url,
                 encrypted_code_verifier=verifier,
@@ -395,11 +534,13 @@ class ConnectedAccountService:
         end_user_id: uuid.UUID,
         scopes: list[str] | None = None,
         return_url: str | None = None,
+        store: DatabaseStateStore | None = None,
     ) -> OAuthClient:
         built = provider_config(self._config, provider, scopes)
         return OAuthClient(
             built,
-            state_store=DatabaseStateStore(self._db, end_user_id=end_user_id, provider=provider, return_url=return_url),
+            state_store=store
+            or DatabaseStateStore(self._db, end_user_id=end_user_id, provider=provider, return_url=return_url),
             revocation_handler=_revocation_handler(self._config, provider),
             identity_handler=_identity_handler(provider, built),
         )
@@ -425,11 +566,17 @@ class ConnectedAccountService:
     async def list_apps(self, workspace_id: uuid.UUID, user: str | None = None) -> list[ConnectedAppPublic]:
         counts: dict[str, int] = {}
         end_user = await self.end_user(workspace_id, user, create=False) if user else None
-        if end_user is not None:
+        if user:
+            # One grouped query for every app, so a page listing the catalogue
+            # costs the same whether the deployment offers two apps or ten.
+            # Shared connections count: they are connections this user
+            # resolves, and a UI that showed none would tell them to connect
+            # something they can already use.
+            owners = [ConnectedAccount.workspace_id == workspace_id]
+            if end_user is not None:
+                owners.append(ConnectedAccount.end_user_id == end_user.id)
             grouped = await self._db.execute(
-                select(ConnectedAccount.provider, func.count())
-                .where(ConnectedAccount.end_user_id == end_user.id)
-                .group_by(ConnectedAccount.provider)
+                select(ConnectedAccount.provider, func.count()).where(or_(*owners)).group_by(ConnectedAccount.provider)
             )
             counts = {str(provider): int(count) for provider, count in grouped.all()}
         apps = []
@@ -456,22 +603,65 @@ class ConnectedAccountService:
         return apps
 
     async def list_accounts(
-        self, workspace_id: uuid.UUID, user: str, provider: str | None = None
+        self,
+        workspace_id: uuid.UUID,
+        user: str,
+        provider: str | None = None,
+        *,
+        key: str | None = None,
+        include_shared: bool = True,
     ) -> ConnectedAccountsPublic:
+        """This user's connections, and by default the workspace's shared ones too.
+
+        One call answers for every provider and partition, which is what a page
+        listing "your apps" needs; ``provider`` and ``key`` narrow it.
+        """
         end_user = await self.end_user(workspace_id, user, create=False)
-        if end_user is None:
+        owners = []
+        if end_user is not None:
+            owners.append(ConnectedAccount.end_user_id == end_user.id)
+        if include_shared:
+            owners.append(ConnectedAccount.workspace_id == workspace_id)
+        if not owners:
             return ConnectedAccountsPublic(data=[], count=0)
-        statement = select(ConnectedAccount).where(ConnectedAccount.end_user_id == end_user.id)
+        statement = select(ConnectedAccount).where(or_(*owners))
         if provider:
             statement = statement.where(ConnectedAccount.provider == provider)
-        rows = (
-            await self._db.execute(statement.order_by(ConnectedAccount.provider, ConnectedAccount.created_at))
-        ).scalars()
-        data = [_public(row, user) for row in rows]
+        if key is not None:
+            statement = statement.where(ConnectedAccount.connection_key == key)
+        rows = list(
+            (
+                await self._db.execute(statement.order_by(ConnectedAccount.provider, ConnectedAccount.created_at))
+            ).scalars()
+        )
+        names = await self._external_ids({row.connected_by_end_user_id for row in rows})
+        data = [
+            _public(
+                row,
+                None if row.workspace_id is not None else user,
+                connected_by=names.get(row.connected_by_end_user_id),
+            )
+            for row in rows
+        ]
         return ConnectedAccountsPublic(data=data, count=len(data))
 
+    async def _external_ids(self, end_user_ids: set[uuid.UUID | None]) -> dict[uuid.UUID | None, str]:
+        """Map end user ids to the strings the application knows them by, in one query."""
+        wanted = {identifier for identifier in end_user_ids if identifier is not None}
+        if not wanted:
+            return {}
+        rows = await self._db.execute(select(EndUser.id, EndUser.external_id).where(EndUser.id.in_(wanted)))
+        mapped: dict[uuid.UUID | None, str] = {identifier: external for identifier, external in rows.all()}
+        return mapped
+
     async def get_account(self, workspace_id: uuid.UUID, user: str, account_id: uuid.UUID) -> ConnectedAccountPublic:
-        return _public(await self._row(workspace_id, user, account_id), user)
+        row = await self._row(workspace_id, user, account_id)
+        names = await self._external_ids({row.connected_by_end_user_id})
+        return _public(
+            row,
+            None if row.workspace_id is not None else user,
+            connected_by=names.get(row.connected_by_end_user_id),
+        )
 
     # -- the flow --------------------------------------------------------------
 
@@ -481,10 +671,23 @@ class ConnectedAccountService:
         user: str,
         provider: str,
         *,
+        key: str = "",
         scopes: list[str] | None = None,
+        scope_mode: str = "exact",
+        expected_account_identifier: str | None = None,
+        shared: bool = False,
         return_url: str | None = None,
     ) -> AuthorizePublic:
         """Start a flow for ``user``: the consent URL to send their browser to.
+
+        ``key`` partitions one provider into as many connections as the
+        application distinguishes. ``scope_mode="add"`` asks for ``scopes``
+        together with what the existing connection in that partition already
+        holds, which is what a scope upgrade means: most providers replace the
+        grant with what the authorization request names, so asking for only the
+        new scope silently drops the others. ``expected_account_identifier``
+        binds the flow to one account, and ``shared`` stores the result for the
+        workspace instead of this user.
 
         Raises:
             ConnectedAppNotConfiguredError: If the app is not configured here.
@@ -505,11 +708,90 @@ class ConnectedAccountService:
         ).scalar_one()
         if count >= MAX_CONNECTED_ACCOUNTS_PER_USER:
             raise ConnectedAccountLimitReachedError(MAX_CONNECTED_ACCOUNTS_PER_USER)
-        client = self._client(provider, end_user_id=end_user.id, scopes=scopes, return_url=return_url)
-        url, pending = await client.get_authorization_url(metadata={"scopes": scopes} if scopes else None)
+        asked = await self._scopes_to_ask(
+            workspace_id, end_user, provider, key=key, scopes=scopes, scope_mode=scope_mode, shared=shared
+        )
+        store = DatabaseStateStore(
+            self._db,
+            end_user_id=end_user.id,
+            provider=provider,
+            return_url=return_url,
+            connection_key=key,
+            shared=shared,
+            expected_account_identifier=expected_account_identifier,
+        )
+        client = self._client(provider, end_user_id=end_user.id, scopes=asked, return_url=return_url, store=store)
+        url, pending = await client.get_authorization_url(metadata={"scopes": asked} if asked else None)
         return AuthorizePublic(
             authorization_url=url,
+            flow_id=store.flow_id,
             expires_at=datetime.fromtimestamp(pending.created_at, tz=UTC) + OAUTH_STATE_TTL,
+        )
+
+    async def _scopes_to_ask(
+        self,
+        workspace_id: uuid.UUID,
+        end_user: EndUser,
+        provider: str,
+        *,
+        key: str,
+        scopes: list[str] | None,
+        scope_mode: str,
+        shared: bool,
+    ) -> list[str] | None:
+        """The scope list to put on the authorization request.
+
+        ``exact`` is what the caller said (None meaning the deployment's
+        defaults). ``add`` unions it with the grant already in this partition,
+        so an upgrade keeps what the user has already consented to.
+        """
+        if scope_mode != "add":
+            return scopes
+        existing = await self._resolve_row(workspace_id, end_user, provider, key=key, prefer_shared=shared)
+        held = list(existing.scopes or []) if existing is not None else []
+        if not held:
+            return scopes
+        base = scopes if scopes is not None else list(provider_config(self._config, provider).scopes)
+        merged = list(dict.fromkeys([*held, *base]))
+        return merged
+
+    async def flow(self, workspace_id: uuid.UUID, flow_id: uuid.UUID) -> FlowPublic:
+        """How a flow this application started ended, by the id ``authorize`` returned.
+
+        The application's own alternative to holding the OAuth state: it can
+        tell "the user finished" from "the user closed the window" without
+        being able to complete or replay the flow. Scoped to the workspace, so
+        one application cannot ask about another's.
+
+        Raises:
+            ConnectedAccountFlowNotFoundError: If no such flow belongs to this workspace.
+
+        """
+        row = (
+            await self._db.execute(
+                select(ConnectedAccountOAuthState, EndUser.external_id)
+                .join(EndUser, EndUser.id == ConnectedAccountOAuthState.end_user_id)
+                .where(ConnectedAccountOAuthState.flow_id == flow_id, EndUser.workspace_id == workspace_id)
+            )
+        ).first()
+        if row is None:
+            raise ConnectedAccountFlowNotFoundError(flow_id)
+        pending, external_id = row
+        expires_at = pending.created_at + OAUTH_STATE_TTL
+        status = pending.status
+        if status == "pending" and expires_at <= datetime.now(UTC):
+            # Never stored as "expired": time decides this, and a row nobody
+            # asks about should not need a sweep to become truthful.
+            status = "expired"
+        return FlowPublic(
+            flow_id=pending.flow_id,
+            provider=pending.provider,
+            key=pending.connection_key,
+            user=external_id,
+            status=status,
+            connection_id=pending.connected_account_id,
+            reason=pending.failure_reason,
+            expires_at=expires_at,
         )
 
     async def complete(self, *, state: str, code: str) -> tuple[ConnectedAccountPublic, str]:
@@ -544,19 +826,60 @@ class ConnectedAccountService:
             if _looks_like_missing_state(error):
                 raise ConnectedAccountStateInvalidError() from error
             logger.warning("connection exchange with %s failed: %s", provider, type(error).__name__)
+            await self._fail_flow(pending, "exchange")
             raise ConnectedAccountExchangeError(provider, "code exchange") from error
         identifier, account_label, metadata = await self._identity(client, provider, tokens)
-        row = await self._upsert(end_user.id, provider, tokens, identifier, account_label, metadata)
-        return _public(row, end_user.external_id), pending.return_url or default_return_url(self._config)
+        expected = pending.expected_account_identifier
+        if expected is not None and (identifier is None or identifier != expected):
+            # Nothing is stored: the user picked another account, and writing
+            # this grant would either upgrade the wrong row or leave the
+            # application with two it did not ask for. The tokens are dropped
+            # rather than revoked — the user consented, they simply consented
+            # for the wrong account, and they may well be using it elsewhere.
+            await self._fail_flow(pending, "binding_mismatch")
+            raise ConnectedAccountBindingError(expected, identifier)
+        row = await self._upsert(
+            end_user,
+            provider,
+            tokens,
+            identifier,
+            account_label,
+            metadata,
+            key=pending.connection_key,
+            shared=pending.shared,
+        )
+        pending.status = "connected"
+        pending.connected_account_id = row.id
+        await self._db.commit()
+        return (
+            _public(row, None if pending.shared else end_user.external_id, connected_by=end_user.external_id),
+            pending.return_url or default_return_url(self._config),
+        )
 
-    async def return_url_for_state(self, state: str) -> str:
-        """Where to send a browser whose flow failed, from the state it carries, else the default page."""
-        stored = (
-            await self._db.execute(
-                select(ConnectedAccountOAuthState.return_url).where(ConnectedAccountOAuthState.state == state)
-            )
+    async def _fail_flow(self, pending: ConnectedAccountOAuthState, reason: str) -> None:
+        """Record how a flow ended so the application can ask, then keep going with the error."""
+        pending.status = "failed"
+        pending.failure_reason = reason
+        await self._db.commit()
+
+    async def return_url_for_state(self, state: str, *, failure: str | None = None) -> str:
+        """Where to send a browser whose flow failed, from the state it carries, else the default page.
+
+        Records the failure on the flow while it is here, so an application
+        polling ``flows/{flow_id}`` learns that the user denied consent or the
+        provider sent no code — outcomes the browser knows about and the
+        application otherwise would not.
+        """
+        row = (
+            await self._db.execute(select(ConnectedAccountOAuthState).where(ConnectedAccountOAuthState.state == state))
         ).scalar_one_or_none()
-        return stored or default_return_url(self._config)
+        if row is None:
+            return default_return_url(self._config)
+        if failure is not None and row.status == "pending":
+            row.status = "failed"
+            row.failure_reason = failure[:200]
+            await self._db.commit()
+        return row.return_url or default_return_url(self._config)
 
     async def update(
         self, workspace_id: uuid.UUID, user: str, account_id: uuid.UUID, body: ConnectedAccountUpdate
@@ -565,7 +888,7 @@ class ConnectedAccountService:
         row.label = body.label
         await self._db.commit()
         await self._db.refresh(row)
-        return _public(row, user)
+        return _public(row, None if row.workspace_id is not None else user)
 
     async def disconnect(self, workspace_id: uuid.UUID, user: str, account_id: uuid.UUID) -> None:
         """Delete the grant, revoking it at the provider first when that is possible.
@@ -575,17 +898,25 @@ class ConnectedAccountService:
         hold. The row is deleted either way.
         """
         row = await self._row(workspace_id, user, account_id)
-        try:
-            token = decrypt_secret(row.encrypted_access_token)
-        except SecretDecryptionError:
-            token = None
-        if token is not None:
-            try:
-                await self._client(row.provider, end_user_id=row.end_user_id).revoke_token(token)
-            except (OAuthError, ConnectedAppNotConfiguredError) as error:
-                logger.info("revocation at %s skipped: %s", row.provider, type(error).__name__)
+        await self._revoke_quietly(row)
         await self._db.delete(row)
         await self._db.commit()
+
+    async def _revoke_quietly(self, row: ConnectedAccount) -> None:
+        """Best-effort revocation at the provider; never raises.
+
+        A provider that is down, or an app whose credentials have since been
+        removed from config, must not keep a user from having a credential
+        deleted here.
+        """
+        try:
+            token = self._decrypt_row(row, row.encrypted_access_token)
+        except (SecretDecryptionError, SecretBoxUnavailableError):
+            return
+        try:
+            await self._client(row.provider, end_user_id=row.end_user_id or uuid.uuid4()).revoke_token(token)
+        except (OAuthError, ConnectedAppNotConfiguredError) as error:
+            logger.info("revocation at %s skipped: %s", row.provider, type(error).__name__)
 
     # -- credentials ---------------------------------------------------------------
 
@@ -600,24 +931,139 @@ class ConnectedAccountService:
         row = await self._row(workspace_id, user, account_id)
         return await self._live_token(row)
 
-    async def access_token_for_provider(self, workspace_id: uuid.UUID, user: str, provider: str) -> AccessToken | None:
-        """The token for the user's account with ``provider``, or None when they have none.
+    async def access_token_for_provider(
+        self, workspace_id: uuid.UUID, user: str, provider: str, *, key: str = ""
+    ) -> AccessToken | None:
+        """The token for this user's account with ``provider`` in partition ``key``.
 
-        With several accounts for one provider the oldest wins; a caller that
-        needs a specific one names it by id.
+        Resolution order, which is the whole point of shared connections: the
+        user's own grant first, then the workspace's shared one. None when
+        neither exists. Within one owner and partition the oldest account wins;
+        a caller that means a specific account names it by id
+        (:meth:`access_token`), which is what an application that lets a user
+        pick between two accounts must do.
+        """
+        end_user = await self.end_user(workspace_id, user, create=False)
+        row = await self._resolve_row(workspace_id, end_user, provider, key=key)
+        return None if row is None else await self._live_token(row)
+
+    async def _resolve_row(
+        self,
+        workspace_id: uuid.UUID,
+        end_user: EndUser | None,
+        provider: str,
+        *,
+        key: str = "",
+        prefer_shared: bool = False,
+    ) -> ConnectedAccount | None:
+        """The connection a user resolves for one provider and partition, own before shared.
+
+        ``prefer_shared`` flips the order for a caller that is about to write a
+        shared grant and wants the shared row it will be upgrading.
+        """
+
+        async def own() -> ConnectedAccount | None:
+            if end_user is None:
+                return None
+            return (
+                await self._db.execute(
+                    select(ConnectedAccount)
+                    .where(
+                        ConnectedAccount.end_user_id == end_user.id,
+                        ConnectedAccount.provider == provider,
+                        ConnectedAccount.connection_key == key,
+                    )
+                    .order_by(ConnectedAccount.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        async def shared() -> ConnectedAccount | None:
+            return (
+                await self._db.execute(
+                    select(ConnectedAccount)
+                    .where(
+                        ConnectedAccount.workspace_id == workspace_id,
+                        ConnectedAccount.provider == provider,
+                        ConnectedAccount.connection_key == key,
+                    )
+                    .order_by(ConnectedAccount.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        first, second = (shared, own) if prefer_shared else (own, shared)
+        return await first() or await second()
+
+    async def report_rejected(
+        self, workspace_id: uuid.UUID, user: str, account_id: uuid.UUID, *, reason: str | None = None
+    ) -> ConnectedAccountPublic:
+        """Tell otari the provider refused this credential, and let it try once to recover.
+
+        The contract for a consumer that got a 401 or 403 from the provider: a
+        stored token can be dead while its recorded expiry is still in the
+        future (the user revoked the grant, or the provider rotated it), and
+        nothing otari can see says so. One forced refresh is attempted; if it
+        works the connection stays active and the caller can retry, and if it
+        does not the connection is marked ``needs_reauth`` so every later
+        reader — the application's own listing included — can prompt the user
+        instead of failing the same way again.
+        """
+        row = await self._row(workspace_id, user, account_id)
+        if row.encrypted_refresh_token:
+            try:
+                tokens = await self._client(row.provider, end_user_id=row.end_user_id or uuid.uuid4()).refresh_token(
+                    self._decrypt_row(row, row.encrypted_refresh_token)
+                )
+            except (OAuthError, SecretDecryptionError) as error:
+                logger.info("forced refresh at %s failed: %s", row.provider, type(error).__name__)
+            else:
+                _apply_tokens(row, tokens, keep_refresh=True)
+                row.status = "active"
+                row.invalid_reason = None
+                row.invalid_at = None
+                await self._db.commit()
+                await self._db.refresh(row)
+                return _public(row, None if row.workspace_id is not None else user)
+        row.status = "needs_reauth"
+        row.invalid_reason = (reason or "the provider rejected the credential")[:200]
+        row.invalid_at = datetime.now(UTC)
+        await self._db.commit()
+        await self._db.refresh(row)
+        return _public(row, None if row.workspace_id is not None else user)
+
+    async def forget_user(self, workspace_id: uuid.UUID, user: str) -> int:
+        """Delete everything otari holds for one of the application's users; return how many grants went.
+
+        What an application calls when its own user deletes their account, so
+        "delete my data" reaches across the boundary instead of stopping at the
+        application's database. Each grant is revoked at the provider first,
+        best effort, then the end user row goes and takes its grants and
+        pending flows with it. A shared workspace connection this user
+        happened to consent to is NOT deleted: it belongs to the workspace and
+        others are still acting through it; the record of who connected it is
+        cleared by the SET NULL on that column.
         """
         end_user = await self.end_user(workspace_id, user, create=False)
         if end_user is None:
-            return None
-        row = (
-            await self._db.execute(
-                select(ConnectedAccount)
-                .where(ConnectedAccount.end_user_id == end_user.id, ConnectedAccount.provider == provider)
-                .order_by(ConnectedAccount.created_at)
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        return None if row is None else await self._live_token(row)
+            return 0
+        rows = list(
+            (
+                await self._db.execute(select(ConnectedAccount).where(ConnectedAccount.end_user_id == end_user.id))
+            ).scalars()
+        )
+        for row in rows:
+            await self._revoke_quietly(row)
+            await self._db.delete(row)
+        # Deleted here rather than left to ON DELETE CASCADE: the OSS edition
+        # runs on SQLite, where foreign keys are off unless a connection turns
+        # them on, and "forget this user" must not depend on that.
+        await self._db.execute(
+            delete(ConnectedAccountOAuthState).where(ConnectedAccountOAuthState.end_user_id == end_user.id)
+        )
+        await self._db.delete(end_user)
+        await self._db.commit()
+        return len(rows)
 
     # -- internals ---------------------------------------------------------------
 
@@ -625,37 +1071,77 @@ class ConnectedAccountService:
         expiring = row.expires_at is not None and row.expires_at <= datetime.now(UTC) + REFRESH_LEEWAY
         if expiring and row.encrypted_refresh_token:
             try:
-                tokens = await self._client(row.provider, end_user_id=row.end_user_id).refresh_token(
-                    decrypt_secret(row.encrypted_refresh_token)
+                tokens = await self._client(row.provider, end_user_id=row.end_user_id or uuid.uuid4()).refresh_token(
+                    self._decrypt_row(row, row.encrypted_refresh_token)
                 )
             except OAuthError as error:
+                # A refresh the provider refuses is the other way a credential
+                # dies (next to a consumer's 401): mark it so the application
+                # can prompt a reconnect instead of retrying into the same
+                # failure on every request.
+                row.status = "needs_reauth"
+                row.invalid_reason = "the provider refused to refresh the credential"
+                row.invalid_at = datetime.now(UTC)
+                await self._db.commit()
                 raise ConnectedAccountExchangeError(row.provider, "token refresh") from error
             _apply_tokens(row, tokens, keep_refresh=True)
             await self._db.commit()
             await self._db.refresh(row)
         extra: dict[str, str] = (
-            json.loads(decrypt_secret(row.encrypted_extra_tokens)) if row.encrypted_extra_tokens else {}
+            json.loads(self._decrypt_row(row, row.encrypted_extra_tokens)) if row.encrypted_extra_tokens else {}
         )
         return AccessToken(
+            connection_id=row.id,
             provider=row.provider,
-            token=decrypt_secret(row.encrypted_access_token),
+            key=row.connection_key,
+            token=self._decrypt_row(row, row.encrypted_access_token),
             token_type=row.token_type,
             expires_at=row.expires_at,
+            scopes=list(row.scopes or []),
             extra=extra,
+            extra_scopes={name: list(scopes) for name, scopes in (row.extra_scopes or {}).items()},
+            account_identifier=row.account_identifier,
+            account_label=row.account_label,
+            account_metadata=dict(row.account_metadata or {}),
         )
 
+    def _decrypt_row(self, row: ConnectedAccount, ciphertext: str) -> str:
+        """Decrypt one of ``row``'s secrets, through its own key when it has one.
+
+        A row written before the envelope (``encrypted_data_key`` NULL) is read
+        with the deployment key directly, so no migration of ciphertext is
+        needed: those rows are re-enveloped the next time they are written.
+        """
+        if row.encrypted_data_key is None:
+            return decrypt_secret(ciphertext)
+        return decrypt_under(ciphertext, decrypt_secret(row.encrypted_data_key))
+
     async def _row(self, workspace_id: uuid.UUID, user: str, account_id: uuid.UUID) -> ConnectedAccount:
-        row = (
-            await self._db.execute(
-                select(ConnectedAccount)
-                .join(EndUser, EndUser.id == ConnectedAccount.end_user_id)
-                .where(
-                    ConnectedAccount.id == account_id,
-                    EndUser.workspace_id == workspace_id,
-                    EndUser.external_id == user,
-                )
+        """One connection this user may act on: their own, or the workspace's shared one.
+
+        A user reaching a shared connection by id is deliberate — they resolve
+        it for tokens, so they can also see it, relabel it and disconnect it.
+        The workspace is the boundary that matters; within it the application
+        decides who may do what.
+        """
+        own = (
+            select(ConnectedAccount)
+            .join(EndUser, EndUser.id == ConnectedAccount.end_user_id)
+            .where(
+                ConnectedAccount.id == account_id,
+                EndUser.workspace_id == workspace_id,
+                EndUser.external_id == user,
             )
-        ).scalar_one_or_none()
+        )
+        row = (await self._db.execute(own)).scalar_one_or_none()
+        if row is None:
+            row = (
+                await self._db.execute(
+                    select(ConnectedAccount).where(
+                        ConnectedAccount.id == account_id, ConnectedAccount.workspace_id == workspace_id
+                    )
+                )
+            ).scalar_one_or_none()
         if row is None:
             raise ConnectedAccountNotFoundError(account_id)
         return row
@@ -692,31 +1178,62 @@ class ConnectedAccountService:
 
     async def _upsert(
         self,
-        end_user_id: uuid.UUID,
+        end_user: EndUser,
         provider: str,
         tokens: TokenSet,
         identifier: str | None,
         account_label: str | None,
         metadata: dict[str, Any],
+        *,
+        key: str = "",
+        shared: bool = False,
     ) -> ConnectedAccount:
+        """Store the grant, updating the row for this owner, provider, key and account.
+
+        Reconnecting the same account in the same partition upgrades one row,
+        which is what makes a scope upgrade land where the application resolves
+        it. A shared grant is keyed by the workspace instead of the person, and
+        remembers who consented.
+        """
+        owner = (
+            {"workspace_id": end_user.workspace_id, "connected_by_end_user_id": end_user.id}
+            if shared
+            else {"end_user_id": end_user.id, "connected_by_end_user_id": end_user.id}
+        )
         row: ConnectedAccount | None = None
         if identifier is not None:
+            owner_match = (
+                ConnectedAccount.workspace_id == end_user.workspace_id
+                if shared
+                else ConnectedAccount.end_user_id == end_user.id
+            )
             row = (
                 await self._db.execute(
                     select(ConnectedAccount).where(
-                        ConnectedAccount.end_user_id == end_user_id,
+                        owner_match,
                         ConnectedAccount.provider == provider,
+                        ConnectedAccount.connection_key == key,
                         ConnectedAccount.account_identifier == identifier,
                     )
                 )
             ).scalar_one_or_none()
         if row is None:
             row = ConnectedAccount(
-                end_user_id=end_user_id, provider=provider, account_identifier=identifier, encrypted_access_token=""
+                provider=provider,
+                connection_key=key,
+                account_identifier=identifier,
+                encrypted_access_token="",
+                **owner,
             )
             self._db.add(row)
+        else:
+            row.connected_by_end_user_id = end_user.id
         row.account_label = account_label
         row.account_metadata = metadata or None
+        # A reconnect is how a dead credential comes back to life.
+        row.status = "active"
+        row.invalid_reason = None
+        row.invalid_at = None
         try:
             _apply_tokens(row, tokens, keep_refresh=False)
         except SecretBoxUnavailableError as error:
@@ -783,31 +1300,81 @@ def _extra_tokens(tokens: TokenSet) -> dict[str, str]:
 
 
 def _apply_tokens(row: ConnectedAccount, tokens: TokenSet, *, keep_refresh: bool) -> None:
-    row.encrypted_access_token = encrypt_secret(tokens.access_token)
+    """Write a token set onto a row, encrypted under the row's own key.
+
+    Every write mints a fresh data key, so a row that predates the envelope is
+    enveloped the next time it is refreshed, and re-encrypting a row does not
+    reuse a key with a new plaintext.
+    """
+    data_key = generate_data_key()
+    keep_extra = row.encrypted_extra_tokens if keep_refresh else None
+    keep_refresh_token = row.encrypted_refresh_token if keep_refresh else None
+    if keep_extra is not None or keep_refresh_token is not None:
+        # Re-encrypt what we are keeping under the new key, so one row never
+        # holds ciphertext from two envelopes.
+        if keep_refresh_token is not None:
+            keep_refresh_token = encrypt_under(_decrypt_row_value(row, keep_refresh_token), data_key)
+        if keep_extra is not None:
+            keep_extra = encrypt_under(_decrypt_row_value(row, keep_extra), data_key)
+    row.encrypted_data_key = encrypt_secret(data_key)
+    row.encrypted_access_token = encrypt_under(tokens.access_token, data_key)
     if tokens.refresh_token:
-        row.encrypted_refresh_token = encrypt_secret(tokens.refresh_token)
-    elif not keep_refresh:
-        row.encrypted_refresh_token = None
+        row.encrypted_refresh_token = encrypt_under(tokens.refresh_token, data_key)
+    else:
+        row.encrypted_refresh_token = keep_refresh_token
     extra = _extra_tokens(tokens)
     if extra:
-        row.encrypted_extra_tokens = encrypt_secret(json.dumps(extra))
-    elif not keep_refresh:
-        row.encrypted_extra_tokens = None
+        row.encrypted_extra_tokens = encrypt_under(json.dumps(extra), data_key)
+        row.extra_scopes = _extra_scopes(tokens) or None
+    else:
+        row.encrypted_extra_tokens = keep_extra
+        if keep_extra is None:
+            row.extra_scopes = None
     row.token_type = tokens.token_type or "Bearer"
     row.expires_at = _expires_at(tokens)
     if tokens.scope:
-        row.scopes = tokens.scope.replace(",", " ").split()
+        row.scopes = _split_scopes(tokens.scope)
 
 
-def _public(row: ConnectedAccount, user: str) -> ConnectedAccountPublic:
+def _decrypt_row_value(row: ConnectedAccount, ciphertext: str) -> str:
+    """A row's secret under whichever envelope wrote it (see ``_decrypt_row``)."""
+    if row.encrypted_data_key is None:
+        return decrypt_secret(ciphertext)
+    return decrypt_under(ciphertext, decrypt_secret(row.encrypted_data_key))
+
+
+def _split_scopes(raw: str) -> list[str]:
+    return raw.replace(",", " ").split()
+
+
+def _extra_scopes(tokens: TokenSet) -> dict[str, list[str]]:
+    """Which scopes each secondary token holds.
+
+    Slack grants its user token a scope set of its own, next to the bot's; a
+    consumer that has to choose which token may post needs them apart.
+    """
+    authed_user = tokens.metadata.get("authed_user")
+    if isinstance(authed_user, dict) and isinstance(authed_user.get("scope"), str):
+        return {"user": _split_scopes(authed_user["scope"])}
+    return {}
+
+
+def _public(row: ConnectedAccount, user: str | None, *, connected_by: str | None = None) -> ConnectedAccountPublic:
     return ConnectedAccountPublic(
         id=row.id,
         user=user,
+        owner="workspace" if row.workspace_id is not None else "user",
+        connected_by=connected_by,
         provider=row.provider,
+        key=row.connection_key,
         account_identifier=row.account_identifier,
         account_label=row.account_label,
         label=row.label,
+        status="needs_reauth" if row.status == "needs_reauth" else "active",
+        invalid_reason=row.invalid_reason,
         scopes=list(row.scopes or []),
+        extra_scopes={name: list(scopes) for name, scopes in (row.extra_scopes or {}).items()},
+        account_metadata=dict(row.account_metadata or {}),
         expires_at=row.expires_at,
         has_refresh_token=row.encrypted_refresh_token is not None,
         created_at=row.created_at,

@@ -34,8 +34,41 @@
         "type": "object"
       },
       "AccessToken": {
-        "description": "A live credential for in-process consumers; never leaves the gateway.",
+        "description": "A live credential, with enough about the account to act on it.\n\nEverything a consumer needs to build a provider client in one answer: the\ntoken, the secondary tokens next to it, which scopes each of them holds,\nand who the account is. A Slack consumer needs exactly this \u2014 a bot token,\na user token, the two scope sets apart, and the workspace the pair belongs\nto (``account_metadata['tenancy_id']`` and ``['tenancy_name']``).",
         "properties": {
+          "account_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Identifier"
+          },
+          "account_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Label"
+          },
+          "account_metadata": {
+            "additionalProperties": true,
+            "description": "Who the provider says the account is; a Slack workspace id lives here.",
+            "title": "Account Metadata",
+            "type": "object"
+          },
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
           "expires_at": {
             "anyOf": [
               {
@@ -56,9 +89,32 @@
             "title": "Extra",
             "type": "object"
           },
+          "extra_scopes": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Scopes of those secondary tokens, keyed the same way.",
+            "title": "Extra Scopes",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
           "provider": {
             "title": "Provider",
             "type": "string"
+          },
+          "scopes": {
+            "description": "Scopes the primary token holds.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
           },
           "token": {
             "title": "Token",
@@ -70,7 +126,9 @@
           }
         },
         "required": [
+          "connection_id",
           "provider",
+          "key",
           "token",
           "token_type",
           "expires_at"
@@ -1332,10 +1390,17 @@
             "format": "date-time",
             "title": "Expires At",
             "type": "string"
+          },
+          "flow_id": {
+            "description": "This flow, for GET /v1/connections/flows/{flow_id}: how it ended, once it has. Safe to hold and to put in your own page's URL \u2014 it is not the OAuth state and cannot be used to complete the flow.",
+            "format": "uuid",
+            "title": "Flow Id",
+            "type": "string"
           }
         },
         "required": [
           "authorization_url",
+          "flow_id",
           "expires_at"
         ],
         "title": "AuthorizePublic",
@@ -1343,6 +1408,26 @@
       },
       "AuthorizeRequest": {
         "properties": {
+          "expected_account_identifier": {
+            "anyOf": [
+              {
+                "maxLength": 320,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Refuse the grant unless the provider names this account. Pass the 'account_identifier' of the connection being re-authorized so a user who picks a different account on the consent screen is told, instead of quietly ending up with two.",
+            "title": "Expected Account Identifier"
+          },
+          "key": {
+            "default": "",
+            "description": "Your own partition of this provider, when one connection per provider is not enough: an application that shows Gmail and Google Drive as separate things connects Google twice, under keys of its choosing, each with its own scopes, account and disconnect. Leave empty when the provider is the whole story.",
+            "maxLength": 64,
+            "title": "Key",
+            "type": "string"
+          },
           "return_url": {
             "anyOf": [
               {
@@ -1355,6 +1440,16 @@
             ],
             "description": "Where to send the browser once the account is connected (or the attempt failed). https, or http on localhost. Otari appends connection=ok&provider=...&connection_id=..., or connection=error&provider=...&reason=.... Defaults to a page on this deployment.",
             "title": "Return Url"
+          },
+          "scope_mode": {
+            "default": "exact",
+            "description": "How 'scopes' combines with what the user already granted here. 'exact' asks for exactly that list; 'add' asks for it together with the scopes the existing connection holds, which is what a scope upgrade wants \u2014 asking for only the new ones drops the rest at most providers.",
+            "enum": [
+              "exact",
+              "add"
+            ],
+            "title": "Scope Mode",
+            "type": "string"
           },
           "scopes": {
             "anyOf": [
@@ -1371,6 +1466,12 @@
             ],
             "description": "Scopes to ask for instead of the deployment's defaults for this app.",
             "title": "Scopes"
+          },
+          "shared": {
+            "default": false,
+            "description": "Store the grant for the whole workspace instead of this user: every user of your application in this workspace then resolves it, and the token endpoint falls back to it when a user has none of their own. Consent still comes from this user, and they are recorded as having given it.",
+            "title": "Shared",
+            "type": "boolean"
           },
           "user": {
             "description": "Your application's id for the user.",
@@ -2438,6 +2539,24 @@
             "description": "What the provider calls the account: a name, an email, a workspace.",
             "title": "Account Label"
           },
+          "account_metadata": {
+            "additionalProperties": true,
+            "description": "What the provider says about the account: subject, email, name, workspace id and name.",
+            "title": "Account Metadata",
+            "type": "object"
+          },
+          "connected_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who consented, for a shared connection: the application's id for that user.",
+            "title": "Connected By"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -2455,6 +2574,17 @@
             ],
             "title": "Expires At"
           },
+          "extra_scopes": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "Scopes of the secondary tokens, keyed as they are on the credential (Slack: 'user').",
+            "title": "Extra Scopes",
+            "type": "object"
+          },
           "has_refresh_token": {
             "title": "Has Refresh Token",
             "type": "boolean"
@@ -2462,6 +2592,23 @@
           "id": {
             "format": "uuid",
             "title": "Id",
+            "type": "string"
+          },
+          "invalid_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it needs reconnecting, when it does.",
+            "title": "Invalid Reason"
+          },
+          "key": {
+            "description": "The application's partition of this provider, empty when it makes no distinction.",
+            "title": "Key",
             "type": "string"
           },
           "label": {
@@ -2476,6 +2623,15 @@
             "description": "The user's own label, when set.",
             "title": "Label"
           },
+          "owner": {
+            "description": "Whose credential this is.",
+            "enum": [
+              "user",
+              "workspace"
+            ],
+            "title": "Owner",
+            "type": "string"
+          },
           "provider": {
             "title": "Provider",
             "type": "string"
@@ -2487,24 +2643,43 @@
             "title": "Scopes",
             "type": "array"
           },
+          "status": {
+            "description": "'needs_reauth' once the provider has rejected the grant: ask the user to connect again.",
+            "enum": [
+              "active",
+              "needs_reauth"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
           },
           "user": {
-            "description": "The application's id for the user who connected it.",
-            "title": "User",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The application's id for the user who owns it; null for a connection shared by the workspace.",
+            "title": "User"
           }
         },
         "required": [
           "id",
           "user",
+          "owner",
           "provider",
+          "key",
           "account_identifier",
           "account_label",
           "label",
+          "status",
           "scopes",
           "expires_at",
           "has_refresh_token",
@@ -4451,6 +4626,80 @@
           "model"
         ],
         "title": "ExternalUsageEvent",
+        "type": "object"
+      },
+      "FlowPublic": {
+        "description": "How one connect flow is going, for an application that opened a popup and is waiting.",
+        "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The connection, once there is one.",
+            "title": "Connection Id"
+          },
+          "expires_at": {
+            "description": "When the link stops working.",
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "flow_id": {
+            "format": "uuid",
+            "title": "Flow Id",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it failed, when it did.",
+            "title": "Reason"
+          },
+          "status": {
+            "description": "'pending' while the user is still at the provider, 'connected' with a connection_id once stored, 'failed' with a reason, 'expired' if the link timed out unused.",
+            "enum": [
+              "pending",
+              "connected",
+              "failed",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "user": {
+            "title": "User",
+            "type": "string"
+          }
+        },
+        "required": [
+          "flow_id",
+          "provider",
+          "key",
+          "user",
+          "status",
+          "expires_at"
+        ],
+        "title": "FlowPublic",
         "type": "object"
       },
       "GatewaySettings": {
@@ -8947,6 +9196,26 @@
           "credential"
         ],
         "title": "RegisterPasskeyRequest",
+        "type": "object"
+      },
+      "RejectedReport": {
+        "description": "Why a consumer believes a credential is dead, for the record on the connection.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the provider said, e.g. 'slack: token_revoked'. Shown as invalid_reason.",
+            "title": "Reason"
+          }
+        },
+        "title": "RejectedReport",
         "type": "object"
       },
       "RequestPasswordResetRequest": {
@@ -17386,7 +17655,7 @@
     },
     "/v1/connections": {
       "get": {
-        "description": "A user's connected accounts, optionally for one provider. Tokens are never included.",
+        "description": "Everything a user resolves \u2014 their own connections and the workspace's shared ones.\n\nOne call covers every provider and partition, so a page that lists what a\nuser has connected does not ask per app. ``provider`` and ``key`` narrow\nit; ``include_shared=false`` leaves out what the workspace shares. Tokens\nare never included.",
         "operationId": "list_connections_v1_connections_get",
         "parameters": [
           {
@@ -17416,6 +17685,32 @@
                 }
               ],
               "title": "Provider"
+            }
+          },
+          {
+            "in": "query",
+            "name": "key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_shared",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Include Shared",
+              "type": "boolean"
             }
           }
         ],
@@ -17515,6 +17810,106 @@
           }
         ],
         "summary": "List Connected Apps",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/connections/flows/{flow_id}": {
+      "get": {
+        "description": "How a flow you started is going: pending, connected (with the connection), failed, or expired.\n\nFor waiting without watching a browser. This is not the OAuth state: it\ncannot complete or replay the flow, so it is safe to put in your own page's\nURL or hand to a polling client.",
+        "operationId": "get_connection_flow_v1_connections_flows__flow_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "flow_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Flow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlowPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Get Connection Flow",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
+    "/v1/connections/user": {
+      "delete": {
+        "description": "Delete every connection Otari holds for one of your users, revoking each grant first.\n\nWhat to call when that user deletes their account with you, so \"delete my\ndata\" does not stop at your own database. Connections the workspace shares\nare left alone: they belong to the workspace, not to the person who\nhappened to connect them.",
+        "operationId": "forget_user_v1_connections_user_delete",
+        "parameters": [
+          {
+            "description": "Your application's id for the user.",
+            "in": "query",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "description": "Your application's id for the user.",
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "User",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Forget User",
         "tags": [
           "connections"
         ]
@@ -17714,9 +18109,91 @@
         ]
       }
     },
+    "/v1/connections/{connection_id}/rejected": {
+      "post": {
+        "description": "Report that the provider refused this credential; Otari tries once to recover it.\n\nCall this when a request to the app came back 401 or 403. A stored token\ncan be dead while its recorded expiry is still in the future \u2014 the user\nrevoked the grant, or the provider rotated it \u2014 and nothing Otari can see\nsays so. One forced refresh is attempted: if it succeeds the answer is an\n``active`` connection and the call is worth retrying, and if it fails the\nconnection comes back ``needs_reauth``, which is your cue to ask the user\nto connect again.",
+        "operationId": "report_connection_rejected_v1_connections__connection_id__rejected_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Your application's id for the user.",
+            "in": "query",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "description": "Your application's id for the user.",
+              "maxLength": 255,
+              "minLength": 1,
+              "title": "User",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RejectedReport"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectedAccountPublic"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Report Connection Rejected",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
     "/v1/connections/{provider}/authorize": {
       "post": {
-        "description": "Start connecting an account for one of your users: the link to send their browser to.\n\nOtari runs the consent flow and the callback. The browser ends up at\n``return_url`` with ``connection=ok&provider=\u2026&connection_id=\u2026`` or\n``connection=error&provider=\u2026&reason=\u2026`` appended. The link is good for ten\nminutes and one exchange.",
+        "description": "Start connecting an account for one of your users: the link to send their browser to.\n\nOtari runs the consent flow and the callback. The browser ends up at\n``return_url`` with ``connection=ok&provider=\u2026&connection_id=\u2026`` or\n``connection=error&provider=\u2026&reason=\u2026`` appended. The link is good for ten\nminutes and one exchange.\n\nThe answer also carries a ``flow_id``: poll\n``GET /v1/connections/flows/{flow_id}`` when you cannot see the browser\ncome back \u2014 a popup the user closed, or an agent that asked mid-run and is\nwaiting to continue.",
         "operationId": "authorize_connection_v1_connections__provider__authorize_post",
         "parameters": [
           {
@@ -17780,7 +18257,7 @@
     },
     "/v1/connections/{provider}/token": {
       "get": {
-        "description": "The live credential for a user's account with an app, for code that calls the app itself.\n\nRefreshed first when it expires within a minute. This is the one place a\ntoken leaves Otari, and it goes only to the application whose users these\nare: the same application that registered the OAuth client. A user with no\naccount for the app answers 404.",
+        "description": "The live credential for a user's account with an app, for code that calls the app itself.\n\nRefreshed first when it expires within a minute. Without ``connection_id``\nthis resolves the user's own connection in partition ``key``, then the one\nthe workspace shares. With it, that connection and no other: the endpoint\npicks only when you have not decided, which is what an application whose\nuser chose between two accounts needs. This is the one place a token\nleaves Otari, and it goes only to the application whose users these are:\nthe same application that registered the OAuth client. A user with no such\naccount answers 404.",
         "operationId": "get_connection_token_v1_connections__provider__token_get",
         "parameters": [
           {
@@ -17806,6 +18283,38 @@
               "minLength": 1,
               "title": "User",
               "type": "string"
+            }
+          },
+          {
+            "description": "Your own partition of this provider; empty when you use none.",
+            "in": "query",
+            "name": "key",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "Your own partition of this provider; empty when you use none.",
+              "maxLength": 64,
+              "title": "Key",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Which of the user's accounts for this app to use; otherwise Otari picks.",
+            "in": "query",
+            "name": "connection_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which of the user's accounts for this app to use; otherwise Otari picks.",
+              "title": "Connection Id"
             }
           }
         ],

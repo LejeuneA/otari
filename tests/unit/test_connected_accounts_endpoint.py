@@ -149,3 +149,118 @@ def test_provider_error_and_bad_requests(tmp_path: Path, monkeypatch: pytest.Mon
         )
         assert bad_return.status_code == 400
         assert client.post("/v1/connections/github/authorize", headers=AUTH, json={}).status_code == 422
+
+
+def test_flow_polling_over_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An application that opened a popup asks how the flow ended, not for the state."""
+    with _client(tmp_path, monkeypatch) as client:
+        started = client.post(
+            "/v1/connections/github/authorize", headers=AUTH, json={"user": USER, "key": "issues"}
+        ).json()
+        flow_id = started["flow_id"]
+        state = parse_qs(urlsplit(started["authorization_url"]).query)["state"][0]
+
+        pending = client.get(f"/v1/connections/flows/{flow_id}", headers=AUTH).json()
+        assert (pending["status"], pending["key"], pending["user"]) == ("pending", "issues", USER)
+        assert pending["connection_id"] is None
+
+        client.get(f"/connected-accounts/github/callback?code=abc&state={state}", follow_redirects=False)
+        done = client.get(f"/v1/connections/flows/{flow_id}", headers=AUTH).json()
+        assert done["status"] == "connected" and done["connection_id"] is not None
+
+        # The flow id is not a credential: it says how things went and nothing more.
+        assert "token" not in done and state not in client.get(
+            f"/v1/connections/flows/{flow_id}", headers=AUTH
+        ).text
+        assert client.get(f"/v1/connections/flows/{uuid.uuid4()}", headers=AUTH).status_code == 404
+        assert client.get(f"/v1/connections/flows/{flow_id}").status_code == 401
+
+
+def test_a_named_connection_answers_only_for_its_own_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _client(tmp_path, monkeypatch) as client:
+        started = client.post("/v1/connections/github/authorize", headers=AUTH, json={"user": USER}).json()
+        state = parse_qs(urlsplit(started["authorization_url"]).query)["state"][0]
+        landed = client.get(f"/connected-accounts/github/callback?code=abc&state={state}", follow_redirects=False)
+        connection_id = parse_qs(urlsplit(landed.headers["location"]).fragment.partition("?")[2])["connection_id"][0]
+
+        named = client.get(
+            "/v1/connections/github/token", headers=AUTH, params={"user": USER, "connection_id": connection_id}
+        )
+        assert named.status_code == 200 and named.json()["connection_id"] == connection_id
+        # Another app's endpoint must not serve it, even with the right id.
+        assert (
+            client.get(
+                "/v1/connections/slack/token", headers=AUTH, params={"user": USER, "connection_id": connection_id}
+            ).status_code
+            == 404
+        )
+        # Someone else's user cannot name it either.
+        assert (
+            client.get(
+                "/v1/connections/github/token", headers=AUTH, params={"user": "bob", "connection_id": connection_id}
+            ).status_code
+            == 404
+        )
+
+
+def test_reporting_a_rejected_credential_over_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _client(tmp_path, monkeypatch) as client:
+        started = client.post("/v1/connections/github/authorize", headers=AUTH, json={"user": USER}).json()
+        state = parse_qs(urlsplit(started["authorization_url"]).query)["state"][0]
+        landed = client.get(f"/connected-accounts/github/callback?code=abc&state={state}", follow_redirects=False)
+        connection_id = parse_qs(urlsplit(landed.headers["location"]).fragment.partition("?")[2])["connection_id"][0]
+
+        # The fake issues no refresh token, so there is nothing to recover with.
+        reported = client.post(
+            f"/v1/connections/{connection_id}/rejected",
+            headers=AUTH,
+            params={"user": USER},
+            json={"reason": "github: bad_credentials"},
+        )
+        assert reported.status_code == 200, reported.text
+        assert reported.json()["status"] == "needs_reauth"
+        assert reported.json()["invalid_reason"] == "github: bad_credentials"
+
+        listed = client.get("/v1/connections", headers=AUTH, params={"user": USER}).json()
+        assert listed["data"][0]["status"] == "needs_reauth"
+        assert (
+            client.post(f"/v1/connections/{uuid.uuid4()}/rejected", headers=AUTH, params={"user": USER}).status_code
+            == 404
+        )
+
+
+def test_forgetting_a_user_over_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _client(tmp_path, monkeypatch) as client:
+        started = client.post("/v1/connections/github/authorize", headers=AUTH, json={"user": USER}).json()
+        state = parse_qs(urlsplit(started["authorization_url"]).query)["state"][0]
+        client.get(f"/connected-accounts/github/callback?code=abc&state={state}", follow_redirects=False)
+        assert client.get("/v1/connections", headers=AUTH, params={"user": USER}).json()["count"] == 1
+
+        assert client.delete("/v1/connections/user", headers=AUTH, params={"user": USER}).status_code == 204
+        assert client.get("/v1/connections", headers=AUTH, params={"user": USER}).json()["count"] == 0
+        # Idempotent: a user with nothing left, or one never seen, is not an error.
+        assert client.delete("/v1/connections/user", headers=AUTH, params={"user": USER}).status_code == 204
+        assert client.delete("/v1/connections/user", headers=AUTH, params={"user": "never-seen"}).status_code == 204
+        assert client.delete("/v1/connections/user", params={"user": USER}).status_code == 401
+
+
+def test_shared_connections_over_http(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _client(tmp_path, monkeypatch) as client:
+        started = client.post(
+            "/v1/connections/github/authorize", headers=AUTH, json={"user": USER, "shared": True}
+        ).json()
+        state = parse_qs(urlsplit(started["authorization_url"]).query)["state"][0]
+        client.get(f"/connected-accounts/github/callback?code=abc&state={state}", follow_redirects=False)
+
+        # A user who connected nothing resolves the workspace's credential.
+        listed = client.get("/v1/connections", headers=AUTH, params={"user": "bob"}).json()
+        assert listed["count"] == 1
+        assert (listed["data"][0]["owner"], listed["data"][0]["user"]) == ("workspace", None)
+        assert listed["data"][0]["connected_by"] == USER
+        assert client.get("/v1/connections/github/token", headers=AUTH, params={"user": "bob"}).status_code == 200
+        excluded = client.get(
+            "/v1/connections", headers=AUTH, params={"user": "bob", "include_shared": False}
+        ).json()
+        assert excluded["count"] == 0

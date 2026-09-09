@@ -64,9 +64,7 @@ def get_secret_box() -> MultiFernet:
     """
     keys = _load_keys()
     if not keys:
-        raise SecretBoxUnavailableError(
-            "OTARI_SECRET_KEY is not set; it is required to store provider credentials."
-        )
+        raise SecretBoxUnavailableError("OTARI_SECRET_KEY is not set; it is required to store provider credentials.")
     try:
         fernets = [Fernet(key.encode()) for key in keys]
     except (ValueError, TypeError):
@@ -107,3 +105,42 @@ def decrypt_secret(ciphertext: str) -> str:
         raise SecretDecryptionError(
             "A stored provider credential could not be decrypted with the configured OTARI_SECRET_KEY."
         ) from None
+
+
+def generate_data_key() -> str:
+    """A fresh Fernet key for one row's own envelope (see :func:`encrypt_under`).
+
+    Envelope encryption: a row's secrets are encrypted with this key, and only
+    this key is encrypted with ``OTARI_SECRET_KEY``. Rotating the deployment
+    key then rewraps one short value per row instead of re-encrypting every
+    secret, and a single disclosed row key is worth exactly one row.
+    """
+    return Fernet.generate_key().decode()
+
+
+def encrypt_under(plaintext: str, data_key: str) -> str:
+    """Encrypt ``plaintext`` with a row's own key rather than the deployment key.
+
+    Raises ``SecretBoxUnavailableError`` if ``data_key`` is not a valid Fernet
+    key, which means the caller's envelope is broken rather than the
+    deployment's configuration.
+    """
+    return _fernet_for(data_key).encrypt(plaintext.encode()).decode()
+
+
+def decrypt_under(ciphertext: str, data_key: str) -> str:
+    """Decrypt a value written by :func:`encrypt_under` with the row's own key."""
+    try:
+        return _fernet_for(data_key).decrypt(ciphertext.encode()).decode()
+    except InvalidToken:
+        raise SecretDecryptionError(
+            "A stored credential could not be decrypted with its own key; the row's envelope is broken."
+        ) from None
+
+
+def _fernet_for(data_key: str) -> Fernet:
+    try:
+        return Fernet(data_key.encode())
+    except (ValueError, TypeError):
+        # Never echo the value: it is key material.
+        raise SecretBoxUnavailableError("A stored row key is not a valid Fernet key.") from None
