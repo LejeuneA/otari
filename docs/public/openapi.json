@@ -17367,7 +17367,7 @@
                 "type": "null"
               }
             ],
-            "description": "Results are kept only from these domains; intersected with any list the request sends",
+            "description": "Filters Search results and constrains initial and redirected Fetch destinations; intersected with any list the request sends",
             "title": "Allowed Domains"
           },
           "blocked_domains": {
@@ -17382,11 +17382,11 @@
                 "type": "null"
               }
             ],
-            "description": "Results from these domains are dropped; added to any list the request sends",
+            "description": "Filters Search results and blocks initial and redirected Fetch destinations; added to any list the request sends",
             "title": "Blocked Domains"
           },
           "enabled": {
-            "description": "False refuses web search for this workspace, both the otari_web_search tool and the search endpoint. The fields below narrow the tool only.",
+            "description": "False refuses web access for this workspace through otari_web_search, otari_web_fetch, and POST /api/v1/search.",
             "title": "Enabled",
             "type": "boolean"
           },
@@ -17401,7 +17401,7 @@
                 "type": "null"
               }
             ],
-            "description": "Ceiling on results one search returns; only ever lowers the effective limit, so at most 20",
+            "description": "Search only: ceiling on results one search returns; only ever lowers the effective limit, so at most 20",
             "title": "Max Results"
           },
           "provider_options": {
@@ -17414,7 +17414,7 @@
                 "type": "null"
               }
             ],
-            "description": "Provider-specific knobs forwarded to the search backend; a request's own keys win",
+            "description": "Search only: provider-specific knobs forwarded to the backend; request keys win",
             "title": "Provider Options"
           },
           "purpose_hint": {
@@ -17427,7 +17427,7 @@
                 "type": "null"
               }
             ],
-            "description": "Hint used when a request declares otari_web_search without one of its own",
+            "description": "Search only: hint used when a request declares otari_web_search without one of its own",
             "title": "Purpose Hint"
           }
         },
@@ -24963,7 +24963,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -24973,6 +24973,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -24981,7 +24982,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -25344,7 +25345,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -25354,6 +25355,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -25362,7 +25364,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -25715,7 +25717,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -25725,6 +25727,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -25733,7 +25736,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -26063,7 +26066,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -26073,6 +26076,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -26081,7 +26085,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -29829,7 +29833,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -29839,6 +29843,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -29847,7 +29852,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -30210,7 +30215,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -30220,6 +30225,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -30228,7 +30234,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -30661,7 +30667,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -30671,6 +30677,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -30679,7 +30686,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -31059,7 +31066,7 @@
             }
           },
           {
-            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+            "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
             "in": "query",
             "name": "tool",
             "required": false,
@@ -31069,6 +31076,7 @@
                   "enum": [
                     "any",
                     "web_search",
+                    "web_fetch",
                     "code_execution"
                   ],
                   "type": "string"
@@ -31077,7 +31085,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, code_execution) matches that tool specifically.",
+              "description": "Filter to requests that ran a gateway-run tool. 'any' matches any tool; a tool name (web_search, web_fetch, code_execution) matches that tool specifically.",
               "title": "Tool"
             }
           },
@@ -33575,7 +33583,7 @@
         ]
       },
       "get": {
-        "description": "Read a workspace's web-search configuration.\n\nTakes the same role as setting it (an organization owner/admin, or an\nowner/admin of this workspace), because the row describes the workspace's\nposture rather than one member's allowance. A workspace with no row answers\nwith the unconfigured shape (``configured: false``), which is the\ndeployment's own behavior described in the same shape rather than a 404.",
+        "description": "Read a workspace's web-access configuration.\n\nTakes the same role as setting it (an organization owner/admin, or an\nowner/admin of this workspace), because the row describes the workspace's\nposture rather than one member's allowance. A workspace with no row answers\nwith the unconfigured shape (``configured: false``), which is the\ndeployment's own behavior described in the same shape rather than a 404.",
         "operationId": "workspace-web-search-get_workspace_web_search_config",
         "parameters": [
           {
@@ -33625,7 +33633,7 @@
         ]
       },
       "put": {
-        "description": "Set a workspace's web-search configuration, replacing any existing one.\n\nAn organization owner/admin, or an owner/admin of this workspace, may write\nit. The configuration can only narrow what the deployment permits: turning\nweb search off for the workspace, lowering the result ceiling, and adding to\nthe domains a search may not reach. It never turns on a backend the\ndeployment has not configured, and it carries no credential.",
+        "description": "Set a workspace's web-access configuration, replacing any existing one.\n\nAn organization owner/admin, or an owner/admin of this workspace, may write\nit. The configuration can only narrow what the deployment permits: turning\nweb access off for the workspace, lowering the Search result ceiling, and\nconstraining domains for Search and Fetch. It never turns on a backend the\ndeployment has not configured, and it carries no credential.",
         "operationId": "workspace-web-search-set_workspace_web_search_config",
         "parameters": [
           {
