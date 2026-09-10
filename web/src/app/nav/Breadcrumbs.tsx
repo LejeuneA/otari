@@ -1,6 +1,7 @@
 import { Fragment } from "react"
 
 import { navContextForPath, navLabelForPath } from "@/app/nav/registry"
+import { usePluginPages } from "@/app/nav/usePluginPages"
 import { useOrganizationContext } from "@/shared/api/organizations"
 import { useSelectedWorkspace } from "@/shared/hooks/SelectedWorkspace"
 import { useDeployment } from "@/shared/hooks/useDeployment"
@@ -21,8 +22,13 @@ export function Breadcrumbs({ pathname }: { pathname: string }) {
   const { deployment_type } = useDeployment()
   const organization = useOrganizationContext()
   const { selected } = useSelectedWorkspace()
+  const pluginPages = usePluginPages()
 
-  const page = navLabelForPath(pathname)
+  // A plugin's page is the one destination the registry does not name, so
+  // its label comes from the plugin that serves it.
+  const page =
+    navLabelForPath(pathname) ??
+    pluginPages.find((one) => one.path === pathname)?.label
   const organizationName = organization.data?.organization?.name
   const inOrganization = navContextForPath(pathname) === "organization"
 

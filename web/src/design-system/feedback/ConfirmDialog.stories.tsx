@@ -54,6 +54,20 @@ export const WithError: Story = {
   },
 }
 
+/**
+ * The confirm held back until the body says otherwise: an install of code
+ * nobody has reviewed asks for the repository name to be typed, and the body
+ * owns the field while the dialog owns the gate.
+ */
+export const Held: Story = {
+  args: {
+    heading: "Install otari-request-log",
+    body: "This installs code from a third-party repository that mozilla.ai has not reviewed. Type example/otari-request-log to confirm.",
+    confirmLabel: "Install",
+    isConfirmDisabled: true,
+  },
+}
+
 /** `body` is a node, so it can carry a list of exactly what is about to happen. */
 export const RichBody: Story = {
   args: {

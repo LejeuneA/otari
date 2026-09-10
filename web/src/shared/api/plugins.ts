@@ -1,0 +1,96 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+
+import type {
+  InstallPluginRequest,
+  InstallPluginResponse,
+  MarketplaceResponse,
+  PluginsResponse,
+} from "@/client"
+import { apiFetch } from "@/shared/api/client"
+import { NO_RETRY, PLUGIN_MARKETPLACE, PLUGINS } from "@/shared/api/queryKeys"
+
+// Operator-only, all of it: `GET /plugins` answers 403 to anyone else, so a
+// caller gates `enabled` on the caller axis rather than reading the refusal.
+export function usePlugins(enabled = true) {
+  return useQuery({
+    queryKey: [PLUGINS],
+    queryFn: () => apiFetch<PluginsResponse>("/plugins"),
+    // The set changes on an install, a removal, or a restart, and the writes
+    // invalidate it; a minute covers the restart.
+    staleTime: 60_000,
+    enabled,
+  })
+}
+
+/**
+ * The plugins on offer. `refresh` asks the gateway to bypass its own cache of
+ * the verified index and the GitHub topic, and is part of the key so a page
+ * asking for fresh data does fetch rather than reading the cached listing back.
+ */
+export function useMarketplace(refresh = false) {
+  return useQuery({
+    queryKey: [PLUGIN_MARKETPLACE, { refresh }],
+    queryFn: () =>
+      apiFetch<MarketplaceResponse>(
+        refresh ? "/plugins/marketplace?refresh=true" : "/plugins/marketplace",
+      ),
+    // The gateway caches the listing for ten minutes; there is nothing to gain
+    // from asking it more often than that.
+    staleTime: 5 * 60_000,
+    placeholderData: (previous) => previous,
+    // Backed by two outbound fetches gateway-side, so a slow GitHub is the
+    // reason this fails, and three sequential tries would hold the socket for
+    // the whole time.
+    ...NO_RETRY,
+  })
+}
+
+function useInvalidatePlugins() {
+  const queryClient = useQueryClient()
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: [PLUGINS] })
+    // `installed` on every listing entry is derived from the installed set.
+    void queryClient.invalidateQueries({ queryKey: [PLUGIN_MARKETPLACE] })
+  }
+}
+
+/** Upload an archive. Multipart, with the file under the `file` field. */
+export function useUploadPlugin() {
+  const invalidate = useInvalidatePlugins()
+  return useMutation({
+    mutationFn: (file: File) => {
+      const body = new FormData()
+      body.append("file", file, file.name)
+      return apiFetch<InstallPluginResponse>("/plugins/upload", {
+        method: "POST",
+        body,
+      })
+    },
+    onSuccess: invalidate,
+  })
+}
+
+/** Install from a GitHub repository, by `owner/name` and an optional ref. */
+export function useInstallPlugin() {
+  const invalidate = useInvalidatePlugins()
+  return useMutation({
+    mutationFn: (body: InstallPluginRequest) =>
+      apiFetch<InstallPluginResponse>("/plugins/install", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: invalidate,
+  })
+}
+
+/** Remove a plugin installed in the plugins directory. It unloads on restart. */
+export function useRemovePlugin() {
+  const invalidate = useInvalidatePlugins()
+  return useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<void>(`/plugins/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: invalidate,
+  })
+}

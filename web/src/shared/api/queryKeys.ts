@@ -99,6 +99,13 @@ export const PLAYGROUND = "playground"
 // organization key: a passkey belongs to a person, not to the organization they
 // happen to be acting in, and switching organizations does not change the list.
 export const PASSKEYS = "passkeys"
+// The plugins this gateway discovered, and the marketplace listing. Two keys
+// rather than one: the listing is a server-side fetch of GitHub behind a
+// ten-minute cache, and a plain re-read of the installed list (which the rail
+// does on every shell mount) must never reach it. An install or a removal
+// changes `installed` on the listing as well, so the writes invalidate both.
+export const PLUGINS = "plugins"
+export const PLUGIN_MARKETPLACE = "plugin-marketplace"
 
 // How often an open tab asks whether the app it is running is still the one the
 // gateway serves. Cheap (a hash of one small file) and only while the tab is

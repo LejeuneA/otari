@@ -8,6 +8,7 @@ import {
   FiArrowLeft,
   FiChevronDown,
   FiChevronRight,
+  FiLayout,
   FiMenu,
   FiSettings,
   FiSidebar,
@@ -39,6 +40,7 @@ import {
   useRouteVisibility,
   useSurfaceVisibility,
 } from "@/app/nav/useNavVisibility"
+import { usePluginPages } from "@/app/nav/usePluginPages"
 import { WorkspaceSwitcher } from "@/app/nav/WorkspaceSwitcher"
 import { EntitlementResolver } from "@/app/overlayEntitlementResolver"
 import { PostSignInGate } from "@/app/overlayPostSignInGate"
@@ -551,6 +553,10 @@ function AppShellChrome() {
     showOrganizationRail ? ORG_NAV_SECTIONS : NAV_SECTIONS,
     isVisible,
   )
+  // The rows the registry cannot declare, appended to the Extend section
+  // below its Marketplace row. Read here rather than inside the map because
+  // it is a hook, and gated by the hook itself on the same axes as that row.
+  const pluginPages = usePluginPages()
 
   // Track the mobile breakpoint so the sidebar can render as an off-canvas
   // drawer below it and as the fixed-width rail above it. Closing the drawer when
@@ -876,6 +882,24 @@ function AppShellChrome() {
                           />
                         ),
                       )}
+                      {/* A loaded plugin's page is a row under Marketplace,
+                          drawn as any other leaf. `to` is the resolved path
+                          rather than the `$name` route with params, so the
+                          row's own name is what a navigation records and what
+                          a bookmark reads; the route tree still matches it. */}
+                      {section.id === "extend"
+                        ? pluginPages.map((page) => (
+                            <NavRowLink
+                              key={page.path}
+                              to={page.path as NavPath}
+                              label={page.label}
+                              icon={FiLayout}
+                              isActive={pathname === page.path}
+                              collapsed={effectiveCollapsed}
+                              onNavigate={closeMobileNav}
+                            />
+                          ))
+                        : null}
                     </div>
                   </section>
                 )
@@ -1040,7 +1064,11 @@ function AppShellChrome() {
             inert={backgroundInert}
             className="flex-1 overflow-y-auto focus:outline-none"
           >
-            <div className="mx-auto flex max-w-[112.5rem] flex-col gap-6 px-4 py-5 md:px-6 md:py-6">
+            {/* `min-h-full` so a page that wants the whole content area (a
+                plugin's framed page) can take it with `flex-1`, and every
+                other page is unchanged: the column is at least the pane's
+                height and grows past it as it always has. */}
+            <div className="mx-auto flex min-h-full max-w-[112.5rem] flex-col gap-6 px-4 py-5 md:px-6 md:py-6">
               {answerIsStillComing ? (
                 <PendingPage />
               ) : routeIsGatedOff ? (

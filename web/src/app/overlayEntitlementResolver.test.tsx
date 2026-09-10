@@ -13,7 +13,11 @@ import {
   EntitlementProvider,
   useEntitlements,
 } from "@/shared/hooks/useEntitlements"
-import { bootstrap, organizationContext } from "@/tests/fixtures"
+import {
+  bootstrap,
+  organizationContext,
+  pluginsResponse,
+} from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
 
 // Through `vi.hoisted`, because a `vi.mock` factory is hoisted above every
@@ -157,9 +161,12 @@ describe("the shell's mount point", () => {
    */
   async function renderShell(page: ReactElement, url?: string) {
     // The shell reads the organization context for its switcher and for the way
-    // into the organization rail.
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      Response.json(organizationContext()),
+    // into the organization rail, and the plugin list for the rows under
+    // Marketplace, which is empty here.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input).includes("/plugins")
+        ? Response.json(pluginsResponse())
+        : Response.json(organizationContext()),
     )
     return renderWithRouter(page, {
       url,

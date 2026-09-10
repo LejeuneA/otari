@@ -13,6 +13,9 @@ import type {
   CallerOrganizationMembership,
   DeploymentBootstrap,
   DeploymentUser,
+  InstalledPlugin,
+  MarketplacePlugin,
+  MarketplaceResponse,
   Organization,
   OrganizationContext,
   OrganizationDomain,
@@ -21,6 +24,7 @@ import type {
   OrganizationSpendCeiling,
   OrgProviderKey,
   PendingOrganizationInvitation,
+  PluginsResponse,
   PricingResponse,
   ScopedBudget,
   UsageSeriesPoint,
@@ -707,6 +711,76 @@ export function workspaceMcpServer(
     has_token: false,
     created_at: "2026-08-01T00:00:00+00:00",
     updated_at: "2026-08-01T00:00:00+00:00",
+    ...overrides,
+  }
+}
+
+// ---------- plugins ----------
+
+/** A plugin the gateway loaded from its drop-in directory, with a page. */
+export function installedPlugin(
+  overrides: Partial<InstalledPlugin> = {},
+): InstalledPlugin {
+  return {
+    name: "agent-gates",
+    version: "0.1.0",
+    description: "Checks a coding agent's turn against a repo's stated rules.",
+    source: "directory",
+    status: "loaded",
+    error: null,
+    homepage: "https://github.com/mozilla-ai/otari-agent-gates",
+    ui: { label: "Agent gates", url: "/plugins/agent-gates/ui/" },
+    api_prefix: "/plugins/agent-gates",
+    routes: 3,
+    cli_commands: ["policy"],
+    migrations: true,
+    ...overrides,
+  }
+}
+
+export function pluginsResponse(
+  overrides: Partial<PluginsResponse> = {},
+): PluginsResponse {
+  return {
+    plugins: [],
+    problems: [],
+    directory: "/srv/otari/otari-plugins",
+    // On, because most tests are about what the controls do; the one about
+    // the callout turns it off.
+    install_allowed: true,
+    restart_required: false,
+    ...overrides,
+  }
+}
+
+/** A marketplace entry, unverified unless a test says otherwise. */
+export function marketplacePlugin(
+  overrides: Partial<MarketplacePlugin> = {},
+): MarketplacePlugin {
+  return {
+    name: "otari-request-log",
+    repo: "example/otari-request-log",
+    description: "Writes every request to a file.",
+    url: "https://github.com/example/otari-request-log",
+    verified: false,
+    version: null,
+    stars: 12,
+    ref: null,
+    updated_at: "2026-01-01T00:00:00Z",
+    installed: false,
+    ...overrides,
+  }
+}
+
+export function marketplaceResponse(
+  overrides: Partial<MarketplaceResponse> = {},
+): MarketplaceResponse {
+  return {
+    verified: [],
+    community: [],
+    errors: [],
+    topic: "otari-plugin",
+    install_allowed: true,
     ...overrides,
   }
 }

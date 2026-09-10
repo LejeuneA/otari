@@ -17,6 +17,12 @@ import {
 export interface TestRouterOptions {
   /** Where the router starts, query string included. */
   url?: string
+  /**
+   * The route path the component is mounted at, when it is not the URL's
+   * own: a parameterized page (`/plugins/$name`) reads its param only from a
+   * route that declares one, and a route at the literal URL declares none.
+   */
+  path?: string
   /** Extra destinations, so a test can observe where a navigation landed. */
   routes?: { path: string; element: ReactNode }[]
   /**
@@ -47,10 +53,11 @@ export interface TestRouterOptions {
  */
 export function withRouter({
   url = "/",
+  path: mountPath,
   routes = [],
   shell,
 }: TestRouterOptions = {}) {
-  const path = url.split("?")[0] || "/"
+  const path = mountPath ?? (url.split("?")[0] || "/")
   // The wrapper's children are not known until it renders, so the route reads
   // them from here. Safe because the router hooks subscribe to router state
   // themselves: a navigation re-renders the component under test directly,

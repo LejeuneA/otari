@@ -11,6 +11,7 @@ import {
   FiKey,
   FiLayers,
   FiMessageSquare,
+  FiPackage,
   FiRepeat,
   FiServer,
   FiShield,
@@ -224,6 +225,28 @@ const BASE_NAV_SECTIONS = [
         label: "Members",
         surface: "workspaces",
         icon: FiUsers,
+      },
+    ],
+  },
+  {
+    // What the gateway can be taught to do beyond what it ships with. One
+    // declared row; the plugins themselves add rows below it at runtime
+    // (`usePluginPages` in `AppShell`), because a registry entry is typed
+    // against the route tree and cannot name a `/plugins/$name` it has not
+    // seen. The section is what those rows are appended to, so its id is part
+    // of that contract.
+    id: "extend",
+    label: "Extend",
+    items: [
+      // `refused`: `/api/v1/plugins` is gated on `require_deployment_operator`
+      // and answers 403, so the row stays when the caller read fails, for the
+      // reason Providers does.
+      {
+        to: "/marketplace",
+        label: "Marketplace",
+        surface: "plugins",
+        icon: FiPackage,
+        operatorOnly: "refused",
       },
     ],
   },

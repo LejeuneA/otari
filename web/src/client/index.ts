@@ -404,6 +404,19 @@ export type VisionStrategy = NonNullable<
 >
 
 // ---------------------------------------------------------------------------
+// Plugins: what this gateway loaded, and what the marketplace offers
+// ---------------------------------------------------------------------------
+export type PluginsResponse = Schemas["PluginsResponse"]
+export type InstalledPlugin = Schemas["InstalledPlugin"]
+export type PluginStatus = InstalledPlugin["status"]
+export type PluginProblem = Schemas["PluginProblem"]
+export type PluginUiInfo = Schemas["PluginUiInfo"]
+export type MarketplaceResponse = Schemas["MarketplaceResponse"]
+export type MarketplacePlugin = Schemas["MarketplacePlugin"]
+export type InstallPluginRequest = Schemas["InstallPluginRequest"]
+export type InstallPluginResponse = Schemas["InstallPluginResponse"]
+
+// ---------------------------------------------------------------------------
 // Tenancy: organizations, workspaces, and the memberships joining them
 //
 // Rehomed from the platform with their shapes intact, which is the point: the

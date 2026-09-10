@@ -18,6 +18,7 @@ import { Route as BudgetsRouteImport } from './routes/budgets'
 import { Route as DocsRouteImport } from './routes/docs'
 import { Route as InvitationsRouteImport } from './routes/invitations'
 import { Route as KeysRouteImport } from './routes/keys'
+import { Route as MarketplaceRouteImport } from './routes/marketplace'
 import { Route as MembersRouteImport } from './routes/members'
 import { Route as ModelsRouteImport } from './routes/models'
 import { Route as OrganizationRouteImport } from './routes/organization'
@@ -36,6 +37,7 @@ import { Route as OrganizationMembersRouteImport } from './routes/organization.m
 import { Route as OrganizationPricingRouteImport } from './routes/organization.pricing'
 import { Route as OrganizationProviderKeysRouteImport } from './routes/organization.provider-keys'
 import { Route as OrganizationUsageRouteImport } from './routes/organization.usage'
+import { Route as PluginsNameRouteImport } from './routes/plugins.$name'
 import { Route as ToolsIndexRouteImport } from './routes/tools.index'
 import { Route as ToolsCodeExecutionRouteImport } from './routes/tools.code-execution'
 import { Route as ToolsGuardrailsRouteImport } from './routes/tools.guardrails'
@@ -85,6 +87,11 @@ const InvitationsRoute = InvitationsRouteImport.update({
 const KeysRoute = KeysRouteImport.update({
   id: '/keys',
   path: '/keys',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MarketplaceRoute = MarketplaceRouteImport.update({
+  id: '/marketplace',
+  path: '/marketplace',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MembersRoute = MembersRouteImport.update({
@@ -178,6 +185,11 @@ const OrganizationUsageRoute = OrganizationUsageRouteImport.update({
   path: '/usage',
   getParentRoute: () => OrganizationRoute,
 } as any)
+const PluginsNameRoute = PluginsNameRouteImport.update({
+  id: '/plugins/$name',
+  path: '/plugins/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ToolsIndexRoute = ToolsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -214,6 +226,7 @@ export interface FileRoutesByFullPath {
   '/docs': typeof DocsRoute
   '/invitations': typeof InvitationsRoute
   '/keys': typeof KeysRoute
+  '/marketplace': typeof MarketplaceRoute
   '/members': typeof MembersRoute
   '/models': typeof ModelsRoute
   '/organization': typeof OrganizationRouteWithChildren
@@ -231,6 +244,7 @@ export interface FileRoutesByFullPath {
   '/organization/pricing': typeof OrganizationPricingRoute
   '/organization/provider-keys': typeof OrganizationProviderKeysRoute
   '/organization/usage': typeof OrganizationUsageRoute
+  '/plugins/$name': typeof PluginsNameRoute
   '/tools/code-execution': typeof ToolsCodeExecutionRoute
   '/tools/guardrails': typeof ToolsGuardrailsRoute
   '/tools/mcp-servers': typeof ToolsMcpServersRoute
@@ -248,6 +262,7 @@ export interface FileRoutesByTo {
   '/docs': typeof DocsRoute
   '/invitations': typeof InvitationsRoute
   '/keys': typeof KeysRoute
+  '/marketplace': typeof MarketplaceRoute
   '/members': typeof MembersRoute
   '/models': typeof ModelsRoute
   '/playground': typeof PlaygroundRoute
@@ -263,6 +278,7 @@ export interface FileRoutesByTo {
   '/organization/pricing': typeof OrganizationPricingRoute
   '/organization/provider-keys': typeof OrganizationProviderKeysRoute
   '/organization/usage': typeof OrganizationUsageRoute
+  '/plugins/$name': typeof PluginsNameRoute
   '/tools/code-execution': typeof ToolsCodeExecutionRoute
   '/tools/guardrails': typeof ToolsGuardrailsRoute
   '/tools/mcp-servers': typeof ToolsMcpServersRoute
@@ -281,6 +297,7 @@ export interface FileRoutesById {
   '/docs': typeof DocsRoute
   '/invitations': typeof InvitationsRoute
   '/keys': typeof KeysRoute
+  '/marketplace': typeof MarketplaceRoute
   '/members': typeof MembersRoute
   '/models': typeof ModelsRoute
   '/organization': typeof OrganizationRouteWithChildren
@@ -298,6 +315,7 @@ export interface FileRoutesById {
   '/organization/pricing': typeof OrganizationPricingRoute
   '/organization/provider-keys': typeof OrganizationProviderKeysRoute
   '/organization/usage': typeof OrganizationUsageRoute
+  '/plugins/$name': typeof PluginsNameRoute
   '/tools/code-execution': typeof ToolsCodeExecutionRoute
   '/tools/guardrails': typeof ToolsGuardrailsRoute
   '/tools/mcp-servers': typeof ToolsMcpServersRoute
@@ -317,6 +335,7 @@ export interface FileRouteTypes {
     | '/docs'
     | '/invitations'
     | '/keys'
+    | '/marketplace'
     | '/members'
     | '/models'
     | '/organization'
@@ -334,6 +353,7 @@ export interface FileRouteTypes {
     | '/organization/pricing'
     | '/organization/provider-keys'
     | '/organization/usage'
+    | '/plugins/$name'
     | '/tools/code-execution'
     | '/tools/guardrails'
     | '/tools/mcp-servers'
@@ -351,6 +371,7 @@ export interface FileRouteTypes {
     | '/docs'
     | '/invitations'
     | '/keys'
+    | '/marketplace'
     | '/members'
     | '/models'
     | '/playground'
@@ -366,6 +387,7 @@ export interface FileRouteTypes {
     | '/organization/pricing'
     | '/organization/provider-keys'
     | '/organization/usage'
+    | '/plugins/$name'
     | '/tools/code-execution'
     | '/tools/guardrails'
     | '/tools/mcp-servers'
@@ -383,6 +405,7 @@ export interface FileRouteTypes {
     | '/docs'
     | '/invitations'
     | '/keys'
+    | '/marketplace'
     | '/members'
     | '/models'
     | '/organization'
@@ -400,6 +423,7 @@ export interface FileRouteTypes {
     | '/organization/pricing'
     | '/organization/provider-keys'
     | '/organization/usage'
+    | '/plugins/$name'
     | '/tools/code-execution'
     | '/tools/guardrails'
     | '/tools/mcp-servers'
@@ -418,6 +442,7 @@ export interface RootRouteChildren {
   DocsRoute: typeof DocsRoute
   InvitationsRoute: typeof InvitationsRoute
   KeysRoute: typeof KeysRoute
+  MarketplaceRoute: typeof MarketplaceRoute
   MembersRoute: typeof MembersRoute
   ModelsRoute: typeof ModelsRoute
   OrganizationRoute: typeof OrganizationRouteWithChildren
@@ -429,6 +454,7 @@ export interface RootRouteChildren {
   UsageRoute: typeof UsageRoute
   WorkspacesRoute: typeof WorkspacesRoute
   AdminAccountsRoute: typeof AdminAccountsRoute
+  PluginsNameRoute: typeof PluginsNameRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -494,6 +520,13 @@ declare module '@tanstack/react-router' {
       path: '/keys'
       fullPath: '/keys'
       preLoaderRoute: typeof KeysRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/marketplace': {
+      id: '/marketplace'
+      path: '/marketplace'
+      fullPath: '/marketplace'
+      preLoaderRoute: typeof MarketplaceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/members': {
@@ -622,6 +655,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OrganizationUsageRouteImport
       parentRoute: typeof OrganizationRoute
     }
+    '/plugins/$name': {
+      id: '/plugins/$name'
+      path: '/plugins/$name'
+      fullPath: '/plugins/$name'
+      preLoaderRoute: typeof PluginsNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/tools/': {
       id: '/tools/'
       path: '/'
@@ -712,6 +752,7 @@ const rootRouteChildren: RootRouteChildren = {
   DocsRoute: DocsRoute,
   InvitationsRoute: InvitationsRoute,
   KeysRoute: KeysRoute,
+  MarketplaceRoute: MarketplaceRoute,
   MembersRoute: MembersRoute,
   ModelsRoute: ModelsRoute,
   OrganizationRoute: OrganizationRouteWithChildren,
@@ -723,6 +764,7 @@ const rootRouteChildren: RootRouteChildren = {
   UsageRoute: UsageRoute,
   WorkspacesRoute: WorkspacesRoute,
   AdminAccountsRoute: AdminAccountsRoute,
+  PluginsNameRoute: PluginsNameRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

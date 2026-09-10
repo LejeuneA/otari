@@ -13,6 +13,12 @@ export interface ConfirmDialogProps {
   body: ReactNode
   confirmLabel: string
   confirmVariant?: "danger" | "primary"
+  /**
+   * Holds the confirm back until the body says otherwise: a typed name that
+   * has to match, for an action whose cost is out of proportion to one click.
+   * Cancel stays live either way.
+   */
+  isConfirmDisabled?: boolean
   isPending: boolean
   error?: unknown
   onConfirm: () => void
@@ -25,6 +31,7 @@ export function ConfirmDialog({
   body,
   confirmLabel,
   confirmVariant = "danger",
+  isConfirmDisabled = false,
   isPending,
   error,
   onConfirm,
@@ -58,6 +65,7 @@ export function ConfirmDialog({
                 </Button>
                 <Button
                   variant={confirmVariant}
+                  isDisabled={isConfirmDisabled}
                   isPending={isPending}
                   onPress={onConfirm}
                 >

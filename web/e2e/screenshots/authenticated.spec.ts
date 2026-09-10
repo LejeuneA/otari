@@ -73,6 +73,10 @@ const WORKSPACE_ROUTES: ReadonlyArray<{
     name: "tools-mcp-servers",
     heading: /mcp servers/i,
   },
+  // Installed plugins and the two marketplace lists. Captured on its first
+  // tab; the marketplace tabs depend on GitHub answering, which the
+  // screenshot host may not be allowed to ask.
+  { route: "/marketplace", name: "marketplace", heading: /marketplace/i },
   { route: "/settings", name: "settings", heading: /settings/i },
   // Deployment-wide accounts, on the organization rail beside Settings. Not the
   // members roster above: that one stops at this organization's boundary.

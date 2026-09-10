@@ -30,6 +30,7 @@ describe("nav registry", () => {
       "observe",
       "gateway",
       "access",
+      "extend",
     ])
     // Exactly one unlabeled group, and it is the one the index sits alone in.
     // Asserted as a count rather than a property of that section, because the
@@ -68,6 +69,7 @@ describe("nav registry", () => {
       "API keys",
       "Providers",
       "Members",
+      "Marketplace",
       "Usage",
       "Workspaces",
       "Members & roles",
@@ -115,7 +117,7 @@ describe("nav registry", () => {
     // list, not a loosened gate.
     expect(
       NAV_ITEMS.filter((item) => item.operatorOnly).map((item) => item.to),
-    ).toEqual(["/providers", "/settings", "/admin/accounts"])
+    ).toEqual(["/providers", "/marketplace", "/settings", "/admin/accounts"])
   })
 
   it("puts each destination on exactly one rail", () => {
@@ -278,6 +280,7 @@ describe("nav registry", () => {
       "keys",
       "models",
       "organizations",
+      "plugins",
       "pricing",
       "providers",
       "routing",

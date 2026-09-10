@@ -7,7 +7,11 @@ import { Provider } from "@/app/provider"
 import { SelectedWorkspaceProvider } from "@/shared/hooks/SelectedWorkspace"
 import { DeploymentProvider } from "@/shared/hooks/useDeployment"
 import { useEntitlements } from "@/shared/hooks/useEntitlements"
-import { bootstrap, organizationContext } from "@/tests/fixtures"
+import {
+  bootstrap,
+  organizationContext,
+  pluginsResponse,
+} from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
 
 // Through `vi.hoisted`, because a `vi.mock` factory is hoisted above every
@@ -84,9 +88,12 @@ describe("the shell's mount point", () => {
   /** The shell with a page inside it, as `__root.tsx` mounts it. */
   async function renderShell(page: ReactElement) {
     // The shell reads the organization context for its switcher and for the way
-    // into the organization rail.
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      Response.json(organizationContext()),
+    // into the organization rail, and the plugin list for the rows under
+    // Marketplace, which is empty here.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      String(input).includes("/plugins")
+        ? Response.json(pluginsResponse())
+        : Response.json(organizationContext()),
     )
     return renderWithRouter(page, {
       shell: (

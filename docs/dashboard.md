@@ -82,6 +82,15 @@ The workspace view contains day-to-day gateway operations:
 - Playground, Models, and Routing
 - Tools
 - API keys, providers, and workspace members
+- Marketplace, and a page for each installed plugin that ships one
+
+Marketplace, under Extend, lists the plugins this gateway loaded, the ones
+mozilla.ai has verified, and the community ones carrying the `otari-plugin`
+topic on GitHub. An operator installs one from there or uploads an archive once
+`plugins.allow_install` is on, and a restart applies it; an unverified install
+asks for the repository name to be typed first, because a plugin runs inside
+the gateway with everything the gateway can reach. A plugin that ships a page
+gets a row of its own under Extend, framed inside the dashboard.
 
 The organization view contains tenant-wide administration:
 

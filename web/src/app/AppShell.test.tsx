@@ -8,6 +8,7 @@ import type {
   CallerOrganizationMembership,
   DeploymentBootstrap,
   GatewaySettings,
+  InstalledPlugin,
 } from "@/client"
 import { API_ROOT } from "@/shared/api/client"
 import { SelectedWorkspaceProvider } from "@/shared/hooks/SelectedWorkspace"
@@ -21,7 +22,9 @@ import { TELEMETRY_EVENTS } from "@/shared/telemetry/events"
 import {
   bootstrap,
   callerOrganizationMembership,
+  installedPlugin,
   organizationContext,
+  pluginsResponse,
 } from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
 import { recordEvent, resetTelemetrySpy } from "@/tests/telemetry"
@@ -81,6 +84,8 @@ function renderShell(
     memberships?: CallerOrganizationMembership[]
     /** Whether the deployment administration surface admits this caller. */
     operator?: boolean
+    /** What `GET /plugins` lists, for the rows the plugins add to the rail. */
+    plugins?: InstalledPlugin[]
   } = {},
 ) {
   const entitlements: Entitlements = {
@@ -114,6 +119,11 @@ function renderShell(
     }
     if (path.includes(`${API_ROOT}/settings`)) {
       return Response.json(options.settings ?? SETTINGS_WITH_PRICING)
+    }
+    // Read by the rail for the plugin rows under Marketplace, once the caller
+    // is known to be an operator. Empty unless a case is about those rows.
+    if (path.startsWith(`${API_ROOT}/plugins`)) {
+      return Response.json(pluginsResponse({ plugins: options.plugins ?? [] }))
     }
     // The membership context, which carries the caller axis. An operator by
     // default, because eight deployment-wide rows declare that axis and every case
@@ -556,6 +566,7 @@ describe("AppShell surface gating", () => {
       "API keys",
       "Providers",
       "Members",
+      "Marketplace",
     ])
     // Routing and Tools nest destinations, so they expand rather than
     // navigate; their children are links once the group is open.
@@ -605,6 +616,72 @@ describe("AppShell surface gating", () => {
     // missing rows but overlay-owned ones this registry no longer declares at
     // all (otari#737).
     expect(screen.queryByText("Gateway")).toBeNull()
+  })
+
+  it("adds a row under Marketplace for each loaded plugin that ships a page", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    await renderShell(bootstrap(), {
+      plugins: [
+        installedPlugin(),
+        // No page to open, so no row: the plugin is still listed on Marketplace.
+        installedPlugin({ name: "audit-log", ui: null }),
+        // A page it would have served, had it loaded.
+        installedPlugin({
+          name: "broken",
+          status: "failed",
+          ui: { label: "Broken", url: "/plugins/broken/ui/" },
+        }),
+      ],
+    })
+
+    const extend = await screen.findByRole("region", { name: "Extend" })
+    const row = await within(extend).findByRole("link", { name: "Agent gates" })
+    expect(row).toHaveAttribute("href", "/plugins/agent-gates")
+    // After the declared row, in the section it extends.
+    expect(
+      within(extend)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Marketplace", "Agent gates"])
+    expect(screen.queryByRole("link", { name: "audit-log" })).toBeNull()
+    expect(screen.queryByRole("link", { name: "Broken" })).toBeNull()
+
+    // The row is a destination like any other: it highlights, and the trail
+    // names the page by the plugin's own label.
+    await user.click(row)
+    expect(
+      await within(extend).findByRole("link", { name: "Agent gates" }),
+    ).toHaveAttribute("aria-current", "page")
+    expect(
+      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByText(
+        "Agent gates",
+      ),
+    ).toHaveAttribute("aria-current", "page")
+  })
+
+  it("withholds Marketplace and the plugin rows from a caller who is not an operator", async () => {
+    mockMatchMedia(false)
+    await renderShell(bootstrap(), {
+      operator: false,
+      plugins: [installedPlugin()],
+    })
+    await screen.findByRole("link", { name: "Overview" })
+    // The context has answered by the time Members is drawn; both rows read
+    // the same answer.
+    await screen.findByRole("link", { name: "Members" })
+
+    expect(screen.queryByRole("link", { name: "Marketplace" })).toBeNull()
+    expect(screen.queryByRole("link", { name: "Agent gates" })).toBeNull()
+    expect(screen.queryByText("Extend")).toBeNull()
+    // And the list was never asked for: `GET /plugins` refuses a member, so
+    // the rail does not make a request it knows the answer to.
+    expect(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.map(([input]) => String(input))
+        .filter((url) => url.startsWith(`${API_ROOT}/plugins`)),
+    ).toEqual([])
   })
 
   it("hides a destination whose surface the deployment does not host", async () => {
