@@ -63,7 +63,9 @@ from gateway.main import (
 FROZEN_ROOT_PATHS = frozenset({"/auth/{provider}/callback", "/metrics"})
 # The SPA shell and its assets. Not API, never versioned.
 SHELL_PATHS = frozenset({"/", "/welcome", "/favicon.svg", "/dashboard-build.json"})
-SHELL_MOUNTS = ("/assets", "/pwa", "/fonts")
+# A plugin's page is shell content too: static files the dashboard frames,
+# served beside its own assets rather than under the API.
+SHELL_MOUNTS = ("/assets", "/pwa", "/fonts", "/plugins/")
 
 
 def _config(postgres_url: str, mode: str | None, **overrides: Any) -> GatewayConfig:

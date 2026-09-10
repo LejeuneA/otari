@@ -20,6 +20,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from gateway.core.addresses import normalized_address
 from gateway.core.env import otari_env
 from gateway.log_config import logger
+from gateway.models.plugins import PluginsConfig
 from gateway.models.routing import RoutingConfig
 
 API_KEY_HEADER = "Otari-Key"
@@ -622,8 +623,7 @@ class GatewayConfig(BaseSettings):
     smtp_host: str | None = Field(
         default=None,
         description=(
-            "SMTP server host for outgoing mail. Unset disables mail entirely under the "
-            "default 'auto' transport."
+            "SMTP server host for outgoing mail. Unset disables mail entirely under the default 'auto' transport."
         ),
     )
     smtp_port: int = Field(default=587, ge=1, le=65535, description="SMTP server port.")
@@ -798,6 +798,14 @@ class GatewayConfig(BaseSettings):
             "Imported once at startup after the core adapters are bound, and called with the "
             "container so an overlay can rebind ports and contribute routers. Unset means "
             "nothing is imported. Unrelated to bootstrap_api_key."
+        ),
+    )
+    plugins: PluginsConfig = Field(
+        default_factory=PluginsConfig,
+        description=(
+            "Plugins: where drop-in plugins live, which discovered ones to leave unloaded, whether "
+            "an operator may install one through the API, where the marketplace reads its lists, "
+            "and each plugin's own block under its name. See docs/plugins.md."
         ),
     )
     log_writer_strategy: str = Field(
@@ -1187,8 +1195,7 @@ class GatewayConfig(BaseSettings):
     mcp_allow_loopback: bool = Field(
         default=True,
         description=(
-            "SSRF gate: allow MCP server URLs that resolve to loopback (useful for same-host "
-            "sidecars). On by default."
+            "SSRF gate: allow MCP server URLs that resolve to loopback (useful for same-host sidecars). On by default."
         ),
     )
     mcp_allow_private_hosts: bool = Field(
@@ -1616,8 +1623,7 @@ class GatewayConfig(BaseSettings):
                 raise ValueError(msg)
             if ":" in name or "/" in name:
                 msg = (
-                    f"routing policy name '{name}' must not contain ':' or '/' "
-                    "(it would shadow a real model selector)."
+                    f"routing policy name '{name}' must not contain ':' or '/' (it would shadow a real model selector)."
                 )
                 raise ValueError(msg)
             if name in self.providers:
@@ -1704,10 +1710,7 @@ class GatewayConfig(BaseSettings):
                 try:
                     LLMProvider(impl)
                 except ValueError as exc:
-                    msg = (
-                        f"providers.{instance}.provider_type '{declared}' is not a known provider "
-                        "implementation."
-                    )
+                    msg = f"providers.{instance}.provider_type '{declared}' is not a known provider implementation."
                     raise ValueError(msg) from exc
             models = entry.get("models")
             if models is not None and not (isinstance(models, list) and all(isinstance(m, str) for m in models)):
@@ -2111,9 +2114,7 @@ class GatewayConfig(BaseSettings):
             try:
                 inline_timeout = int(raw_inline_timeout)
             except (TypeError, ValueError):
-                raise ValueError(
-                    f"{inline_key} must be a positive integer, got {raw_inline_timeout!r}"
-                ) from None
+                raise ValueError(f"{inline_key} must be a positive integer, got {raw_inline_timeout!r}") from None
             if (
                 isinstance(raw_inline_timeout, bool)
                 or (isinstance(raw_inline_timeout, float) and not raw_inline_timeout.is_integer())
@@ -2392,6 +2393,7 @@ def load_config(config_path: str | None = None) -> GatewayConfig:
 
     _apply_otari_env_overrides(config_dict)
     _apply_platform_env_overrides(config_dict)
+    _apply_plugins_env_overrides(config_dict)
 
     config = GatewayConfig(**config_dict)
     # Resolve and cache the platform token once, at load time, so the runtime
@@ -2483,6 +2485,26 @@ def _apply_otari_env_overrides(config: dict[str, Any]) -> None:
             config[field_name] = _coerce_scalar_env(value, GatewayConfig.model_fields[field_name].annotation)
         except _NonScalarField:
             continue
+
+
+def _apply_plugins_env_overrides(config: dict[str, Any]) -> None:
+    """Layer the two ``plugins:`` settings a container template needs over YAML.
+
+    ``OTARI_PLUGINS_DIR`` names the drop-in directory (a mounted volume, in
+    Docker) and ``OTARI_PLUGINS_ALLOW_INSTALL`` turns the API installer on.
+    The rest of the block, including each plugin's own settings, is YAML only.
+    """
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+    directory = os.getenv(f"{OTARI_ENV_PREFIX}PLUGINS_DIR")
+    if directory:
+        plugins["directory"] = directory
+    allow_install = os.getenv(f"{OTARI_ENV_PREFIX}PLUGINS_ALLOW_INSTALL")
+    if allow_install:
+        plugins["allow_install"] = parse_bool_env(allow_install)
+    if plugins:
+        config["plugins"] = plugins
 
 
 def _apply_platform_env_overrides(config: dict[str, Any]) -> None:

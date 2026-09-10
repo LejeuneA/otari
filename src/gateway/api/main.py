@@ -40,6 +40,7 @@ from gateway.api.routes import (
     organizations,
     otlp,
     playground,
+    plugins,
     pricing,
     providers,
     rerank,
@@ -64,6 +65,7 @@ from gateway.api.routes import (
 )
 from gateway.container import Container
 from gateway.core.config import API_ROOT, OTLP_ROOT, GatewayConfig
+from gateway.plugins import PluginRegistry
 
 
 def register_routers(app: FastAPI, config: GatewayConfig) -> None:
@@ -78,6 +80,7 @@ def register_routers(app: FastAPI, config: GatewayConfig) -> None:
     api = APIRouter(prefix=API_ROOT)
     _register_core_routers(api, config)
     _register_contributed_routers(api, app.state.container)
+    _register_plugin_routers(api, app.state.plugins)
     if config.is_hybrid_mode:
         api.include_router(hybrid_mode.router)
     elif config.is_hosted_mode:
@@ -110,6 +113,18 @@ def _register_contributed_routers(api: APIRouter, container: Container) -> None:
             contribution.router,
             dependencies=[Depends(require_capability(contribution.capability))],
         )
+
+
+def _register_plugin_routers(api: APIRouter, registry: PluginRegistry) -> None:
+    """Mount every loaded plugin's routers under ``/plugins/<name>``.
+
+    No entitlement gate: a plugin is loaded or it is not, and the operator
+    chose which. Authentication is the plugin's own per route, like a
+    contributed router's.
+    """
+    for plugin in registry.loaded():
+        for router in plugin.routers:
+            api.include_router(router, prefix=plugin.api_prefix, tags=[f"plugin:{plugin.name}"])
 
 
 def _register_core_routers(api: APIRouter, config: GatewayConfig) -> None:
@@ -151,6 +166,7 @@ def _register_core_routers(api: APIRouter, config: GatewayConfig) -> None:
         return  # Remaining routers (including batches) are standalone-mode only
 
     api.include_router(admin.router)
+    api.include_router(plugins.router)
     api.include_router(auth_session.router)
     api.include_router(auth_password.router)
     api.include_router(auth_signup.router)

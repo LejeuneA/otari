@@ -21,6 +21,9 @@ from gateway.core.database import create_session, dispose_db, init_db
 from gateway.dashboard import DASHBOARD_PACKAGE_PATH, get_dashboard_build_id, get_dashboard_dir
 from gateway.inflight import InFlightMiddleware, InFlightRegistry
 from gateway.log_config import logger
+from gateway.plugins import load_plugins
+from gateway.plugins.marketplace import Marketplace
+from gateway.plugins.migrations import run_plugin_migrations
 from gateway.rate_limit import RateLimiter
 from gateway.root_page import FAVICON_SVG, ROOT_TUTORIAL_HTML
 from gateway.services.alias_service import load_aliases_at_startup, reset_alias_cache, run_alias_refresher
@@ -183,6 +186,12 @@ _CACHEABLE_PREFIXES = ("/assets/",)
 _SHORT_CACHE_PREFIXES = ("/pwa/", "/fonts/")
 
 
+def _is_plugin_page(path: str) -> bool:
+    """Whether ``path`` is under a plugin's static page mount, ``/plugins/<name>/ui/``."""
+    parts = path.split("/")
+    return len(parts) >= 4 and parts[1] == "plugins" and parts[3] == "ui"
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all responses.
 
@@ -195,9 +204,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         path = request.url.path
+        # A plugin's page is shown inside the dashboard, in a frame on this same
+        # origin. Everything else refuses framing outright.
+        response.headers["X-Frame-Options"] = "SAMEORIGIN" if _is_plugin_page(path) else "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         if _under(path, _PUBLIC_PREFIXES):
             return response
         # A cacheable path's policy describes its content, so it applies only to a
@@ -353,6 +364,10 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             log_writer = NoopLogWriter()
         else:
             init_db(config)
+            if config.auto_migrate:
+                # After Otari's own chain, which init_db ran, so a plugin may
+                # reference a core table. Each plugin stamps its own version table.
+                run_plugin_migrations(config.database_url, app.state.plugins)
             async with create_session() as session:
                 # Persisted dashboard overrides win over config/env; apply them
                 # before pricing init so default-pricing behavior is consistent.
@@ -807,6 +822,22 @@ def create_app(config: GatewayConfig) -> FastAPI:
     # that cannot be loaded raises here, so a deployment that named one and got
     # it wrong fails to start instead of quietly running the plain build.
     app.state.container = build_container(config.bootstrap)
+
+    # Plugins load after the container, so a plugin can resolve a port, and
+    # before the routers, since register_routers mounts what they contributed.
+    # A plugin that fails is listed as failed rather than stopping the boot:
+    # unlike a bootstrap, a plugin is optional by construction.
+    app.state.plugins = load_plugins(config, app.state.container)
+    app.state.marketplace = Marketplace(config.plugins.marketplace)
+    for plugin in app.state.plugins.loaded():
+        if plugin.ui is not None:
+            # Static like the dashboard itself; the page authenticates its own
+            # API calls with the session cookie, being same-origin.
+            app.mount(
+                f"/plugins/{plugin.name}/ui",
+                StaticFiles(directory=plugin.ui.directory, html=True),
+                name=f"plugin-ui-{plugin.name}",
+            )
 
     register_routers(app, config)
     app.add_exception_handler(TenancyError, _tenancy_error_handler)

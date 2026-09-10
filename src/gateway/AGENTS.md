@@ -22,6 +22,19 @@ A port that writes within a request shares that request's `AsyncSession` and
 does not commit. A hybrid-capable port may receive no session; a control-plane-only
 port should use the ordinary database dependency instead.
 
+## Plugins
+
+`plugins/` is the runtime seam: `discovery.py` reads manifests without
+importing, `registry.py` loads each plugin and records what its `register`
+contributed, `migrations.py` runs a plugin's Alembic chain on its own version
+table, `archive.py` installs from a zip or tarball, and `marketplace.py`
+fetches the two marketplace lists. `create_app` loads plugins after the
+container and before the routers; `api/main.py` mounts their routers under
+`/plugins/<name>`; `cli.main` attaches their command groups. A plugin that
+fails to load is listed as failed, never a refused boot. The contract a plugin
+writes against is `docs/plugins.md`; keep `PluginContext` stable, since plugin
+repositories depend on it.
+
 ## Request lifecycle
 
 Completion requests follow this order:

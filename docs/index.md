@@ -35,6 +35,7 @@ Running and managing a gateway.
 - [Access control](access-control.md): identities, organizations, workspaces, keys, and budgets.
 - [Models](models.md): selectors, providers, discovery, aliases, and capabilities.
 - [Routing policies](routing.md): failover, conditions, weighted and learned routing, and mandatory guardrails.
+- [Plugins](plugins.md): installing plugins from the Marketplace, the command line, or pip, and writing one.
 - [OpenAI provider guide](providers/openai.md): configure OpenAI and route your first request through Otari.
 
 ### For integrators

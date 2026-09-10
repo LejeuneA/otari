@@ -1,0 +1,183 @@
+# Plugins
+
+A plugin adds a feature to a running Otari without a change to Otari itself:
+API routes, `otari` command groups, database tables with their own migrations,
+and a page in the dashboard. Otari's first plugin, Agent Gates, checks whether a
+coding agent's turn followed a repository's stated rules; it lives in its own
+repository and is installed like any other.
+
+A plugin runs inside the gateway process with everything the gateway can reach:
+provider credentials, the database, every request. Treat installing one the way
+you would treat installing a package into the gateway's environment, because
+that is what it is. The dashboard says so before every install, and installing
+through the API is off until an operator turns it on in `config.yml`.
+
+## Installing a plugin
+
+Three ways, all ending in the same place: a plugin the gateway discovers at
+startup.
+
+**From the dashboard.** The Marketplace page lists plugins mozilla.ai verifies
+and plugins anyone has tagged on GitHub with the `otari-plugin` topic. Installing
+one downloads the repository archive into the plugins directory. This needs
+`plugins.allow_install: true` (or `OTARI_PLUGINS_ALLOW_INSTALL=true`) and a
+restart afterwards. The same page uploads a `.zip` or `.tar.gz` you built
+yourself.
+
+**From the command line**, on the machine running the gateway:
+
+```bash
+otari plugins install mozilla-ai/otari-agent-gates          # a GitHub repository, default branch
+otari plugins install mozilla-ai/otari-agent-gates --ref v0.1.0
+otari plugins install ./otari-agent-gates.zip                # a local archive
+otari plugins list
+otari plugins remove agent-gates
+```
+
+`install` writes into the plugins directory and needs no `allow_install`
+setting: whoever runs it already has the gateway's filesystem. A curl
+equivalent of the upload, for a gateway you reach over HTTP, is in
+`scripts/upload_plugin.sh`.
+
+**As a Python distribution**, for an image you build yourself:
+
+```bash
+uv pip install otari-agent-gates
+```
+
+A distribution registers itself through the `otari.plugins` entry-point group,
+so nothing else is needed. The dashboard lists it with source `entry_point` and
+cannot remove it; `uv pip uninstall` does.
+
+A plugin takes effect on the next start, whichever way it arrived. The
+Marketplace page says when a restart is owed.
+
+## Configuration
+
+```yaml
+plugins:
+  directory: ./otari-plugins     # drop-in plugins; where install and upload write (OTARI_PLUGINS_DIR)
+  allow_install: false           # let the API and dashboard install (OTARI_PLUGINS_ALLOW_INSTALL)
+  disabled: []                   # discovered plugins to leave unloaded
+  marketplace:
+    verified_index_url: https://raw.githubusercontent.com/mozilla-ai/otari-plugins/main/index.json
+    github_topic: otari-plugin
+    github_token: null           # raises the GitHub search rate limit
+  agent-gates:                   # a plugin's own settings, under its name
+    ...
+```
+
+Everything under `plugins:` that is not one of the four settings above is a
+plugin's own block, handed to that plugin as it is. The plugin documents what
+it accepts.
+
+Plugins load in every mode. Their migrations run only where the gateway has a
+database of its own, which excludes hybrid mode.
+
+## Writing a plugin
+
+A plugin is a Python package holding an `otari-plugin.toml` and a
+`register(ctx)` function. The manifest is read before any plugin code runs,
+which is how the installer and the marketplace describe a plugin without
+importing it.
+
+```
+otari-agent-gates/
+  pyproject.toml
+  src/otari_agent_gates/
+    otari-plugin.toml
+    __init__.py            # register(ctx)
+    routes.py
+    cli.py
+    models.py              # the plugin's own SQLAlchemy Base
+    migrations/            # an Alembic script directory
+      env.py
+      versions/
+    static/                # the built dashboard page, index.html and assets
+```
+
+```toml
+# src/otari_agent_gates/otari-plugin.toml
+[plugin]
+name = "agent-gates"              # letters, digits, hyphens; the URL segment the plugin mounts at
+version = "0.1.0"
+description = "Checks a coding agent's turn against a repository's stated rules."
+package = "otari_agent_gates"     # the importable package; the manifest sits inside it
+homepage = "https://github.com/mozilla-ai/otari-agent-gates"
+
+[plugin.ui]                       # optional
+path = "static"                   # relative to the package directory
+label = "Agent gates"             # the sidebar row
+```
+
+```python
+# src/otari_agent_gates/__init__.py
+from pathlib import Path
+
+from gateway.plugins import PluginContext
+
+from .cli import policy
+from .routes import router
+
+
+def register(ctx: PluginContext) -> None:
+    settings = ctx.config                       # the plugins.agent-gates block, raw
+    ctx.add_router(router)                      # served under /api/v1/plugins/agent-gates
+    ctx.add_cli(policy)                         # `otari policy ...`
+    ctx.add_migrations(Path(__file__).parent / "migrations")
+```
+
+What each contribution means:
+
+- **Routes** mount under `/api/v1/plugins/<name>`, plus the router's own
+  prefix. Mounting adds no authentication. Declare it per route the way Otari's
+  routers do, with `verify_master_key`, `require_deployment_operator`, or
+  `verify_api_key_or_master_key` from `gateway.api.deps`.
+- **CLI groups** attach to `otari` at the top level, under the group's own
+  name. A name that collides with a built-in command is skipped and logged.
+- **Migrations** are an Alembic script directory. The plugin's `env.py` is two
+  lines, and the chain stamps `alembic_version_<name>` rather than Otari's
+  `alembic_version`, so the two chains never see each other:
+
+  ```python
+  from alembic import context
+
+  from gateway.plugins.migrations import run_plugin_env
+  from otari_agent_gates.models import Base
+
+  run_plugin_env(context, Base.metadata, "agent-gates")
+  ```
+
+  Declare tables on a `Base` of the plugin's own, not on `gateway.models`'s:
+  Otari's autogenerate compares its metadata against the database and would
+  otherwise propose dropping the plugin's tables. Migrations run after Otari's
+  own, on startup when `auto_migrate` is on and from `otari migrate`, so a
+  plugin table may reference a core one.
+- **A page** is a directory of static files with an `index.html`, served at
+  `/plugins/<name>/ui/`. The dashboard shows it in a frame on the same origin,
+  so the page calls the plugin's routes with the session cookie and needs no
+  token handling of its own. Build it with whatever you like; hash-based
+  client-side routing avoids needing server rewrites under the static mount.
+- **`ctx.container`** is the composition root, for a plugin that needs a port.
+  It is `None` when plugins are loaded for the command line alone.
+
+A plugin that raises during import or `register` is listed as failed with its
+error, and the gateway boots without it. Otari never fails to start over a
+plugin.
+
+For a plugin installed from a directory, the directory holding the package is
+put on `sys.path`. A src layout (`src/<package>/`) and a flat layout
+(`<package>/`) both work, with or without the one extra directory a GitHub
+archive nests everything under.
+
+## Getting listed
+
+Tag the repository with the GitHub topic `otari-plugin` and it appears in the
+Marketplace's community list on every gateway, marked unverified. The verified
+list is a JSON index mozilla.ai maintains:
+
+```json
+{"plugins": [{"name": "agent-gates", "repo": "mozilla-ai/otari-agent-gates", "description": "...", "version": "0.1.0", "ref": "v0.1.0"}]}
+```
+
+`ref` pins what an install fetches; without it, the default branch.

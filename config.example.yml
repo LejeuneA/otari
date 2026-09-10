@@ -97,3 +97,15 @@ providers:
 #   local:
 #     provider: searxng
 #     api_base: "http://searxng:8080"
+
+# Plugins. A plugin is a Python package that adds routes, CLI commands, database
+# tables, and a dashboard page; see docs/plugins.md. Drop-in plugins live in the
+# directory below (also where the dashboard's Marketplace installs to). A plugin
+# runs inside the gateway with everything the gateway can reach, so installing
+# through the API stays off until an operator turns it on here.
+# plugins:
+#   directory: ./otari-plugins
+#   allow_install: false
+#   disabled: []
+#   agent-gates:
+#     # a plugin's own settings, under its name

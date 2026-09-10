@@ -89,6 +89,7 @@ STANDALONE_SURFACES: tuple[str, ...] = (
     # management session and dispatches a completion, so it exists exactly where
     # this process serves both planes.
     "playground",
+    "plugins",
     "pricing",
     "providers",
     "routing",

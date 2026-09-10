@@ -34,8 +34,7 @@ def _parse_log_level(ctx: click.Context, param: click.Parameter, value: str | No
         return int(normalized)
     choices = ", ".join(_LOG_LEVEL_NAMES)
     raise click.BadParameter(
-        f"{value!r} is not a valid log level. Choose one of {choices} (case-insensitive) "
-        "or a numeric level such as 20."
+        f"{value!r} is not a valid log level. Choose one of {choices} (case-insensitive) or a numeric level such as 20."
     )
 
 
@@ -213,6 +212,18 @@ def migrate(config: str | None, database_url: str | None, revision: str) -> None
         click.echo(f"Migration failed: {e.stderr}", err=True)
         sys.exit(1)
 
+    # Plugin chains always go to their own head: --revision addresses Otari's
+    # chain, and a plugin's revisions are not on it.
+    from gateway.plugins import load_plugins
+    from gateway.plugins.migrations import run_plugin_migrations
+
+    registry = load_plugins(gateway_config)
+    with_migrations = [plugin for plugin in registry.loaded() if plugin.migrations]
+    if with_migrations:
+        click.echo(f"Running plugin migrations: {', '.join(plugin.name for plugin in with_migrations)}")
+        run_plugin_migrations(gateway_config.database_url, with_migrations)
+        click.echo("Plugin migrations completed successfully!")
+
 
 @cli.command(name="gen-secret-key")
 def gen_secret_key() -> None:
@@ -302,8 +313,10 @@ def routing_explain(
     if policy_name is None:
         click.echo("Configured policies:")
         for name, listed in cfg.routing.policies.items():
-            shape = f"router:{listed.router_backend}" if listed.router_backend else (
-                "dynamic" if listed.is_dynamic else "static"
+            shape = (
+                f"router:{listed.router_backend}"
+                if listed.router_backend
+                else ("dynamic" if listed.is_dynamic else "static")
             )
             candidates = len(listed.router_candidates) or 1
             click.echo(f"  {name}  ({shape}, {candidates + len(listed.on_failure)} candidate(s))")
@@ -342,12 +355,8 @@ def routing_explain(
     click.echo(f"{policy_name}: {len(plan.attempts)} candidate(s), selected by {plan.selection_reason}")
     for attempt in plan.attempts:
         canonical = f"{attempt.instance}:{attempt.model}"
-        label = (
-            f"weighted {shares[canonical]:.0f}%" if canonical in shares else attempt.selection_reason
-        )
-        click.echo(
-            f"  {attempt.position}. {canonical}    [{label}]  dispatches as {attempt.dispatch_model}"
-        )
+        label = f"weighted {shares[canonical]:.0f}%" if canonical in shares else attempt.selection_reason
+        click.echo(f"  {attempt.position}. {canonical}    [{label}]  dispatches as {attempt.dispatch_model}")
     for dropped in plan.dropped:
         click.echo(f"  x  {dropped.selector}    dropped: {dropped.detail}")
     # Keyed on the backend rather than on the shares: a weighted policy whose whole
@@ -376,9 +385,7 @@ def routing_explain(
     if plan.guardrails:
         click.echo("  guardrails (always enforced):")
         for guardrail in plan.guardrails:
-            click.echo(
-                f"    {guardrail.profile}  mode={guardrail.mode}  on_unavailable={guardrail.on_unavailable}"
-            )
+            click.echo(f"    {guardrail.profile}  mode={guardrail.mode}  on_unavailable={guardrail.on_unavailable}")
     if spec.is_dynamic:
         click.echo(
             "  note: this policy selects per request, so it has no single target or price. It works on "
@@ -571,9 +578,115 @@ def import_claude_code(
         raise SystemExit(1)
 
 
+@cli.group()
+def plugins() -> None:
+    """List, install, and remove plugins."""
+
+
+@plugins.command(name="list")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="Path to config YAML file")
+def plugins_list(config: str | None) -> None:
+    """Show every plugin this configuration discovers, and whether it loads."""
+    from gateway.plugins import load_plugins
+
+    registry = load_plugins(load_config(config))
+    click.echo(f"Plugins directory: {registry.directory}")
+    if not len(registry) and not registry.problems:
+        click.echo("No plugins found.")
+        return
+    for plugin in registry:
+        line = f"{plugin.name} {plugin.manifest.version} [{plugin.source}] {plugin.status}"
+        if plugin.error:
+            line += f": {plugin.error}"
+        click.echo(line)
+    for problem in registry.problems:
+        click.echo(f"! {problem.location} ({problem.source}): {problem.error}")
+
+
+@plugins.command(name="install")
+@click.argument("source")
+@click.option("--ref", default=None, help="Branch, tag, or commit for a GitHub source (default branch when unset)")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="Path to config YAML file")
+def plugins_install(source: str, ref: str | None, config: str | None) -> None:
+    """Install a plugin from a .zip or .tar.gz file, or a GitHub owner/name.
+
+    Writes into the plugins directory; a running gateway loads it on its next
+    start. No allow_install setting is consulted here: whoever runs this command
+    already has the gateway's own filesystem.
+    """
+    import asyncio
+
+    from gateway.plugins import plugins_directory
+    from gateway.plugins.archive import PluginInstallError, fetch_github_archive, install_archive
+
+    directory = plugins_directory(load_config(config))
+    try:
+        path = Path(source)
+        if path.is_file():
+            data = path.read_bytes()
+        else:
+            click.echo(f"Downloading {source} from GitHub...")
+            data = asyncio.run(fetch_github_archive(source, ref))
+        installed = install_archive(data, directory)
+    except PluginInstallError as error:
+        click.echo(f"Install failed: {error}", err=True)
+        sys.exit(1)
+    manifest = installed.manifest
+    click.echo(f"Installed {manifest.name} {manifest.version} into {installed.install_dir}")
+    click.echo("Restart the gateway to load it.")
+
+
+@plugins.command(name="remove")
+@click.argument("name")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="Path to config YAML file")
+def plugins_remove(name: str, config: str | None) -> None:
+    """Delete a plugin from the plugins directory."""
+    from gateway.plugins import plugins_directory
+    from gateway.plugins.archive import PluginInstallError, remove_installed
+    from gateway.plugins.discovery import discover_directory_plugins
+
+    directory = plugins_directory(load_config(config))
+    found, _ = discover_directory_plugins(directory)
+    match = next((plugin for plugin in found if plugin.manifest.name == name), None)
+    if match is None or match.install_dir is None:
+        click.echo(f"No plugin named {name!r} in {directory}", err=True)
+        sys.exit(1)
+    try:
+        remove_installed(match.install_dir, directory)
+    except PluginInstallError as error:
+        click.echo(f"Remove failed: {error}", err=True)
+        sys.exit(1)
+    click.echo(f"Removed {name} from {match.install_dir}. Restart the gateway to unload it.")
+
+
+def _attach_plugin_commands() -> None:
+    """Add every loaded plugin's command groups to ``otari``.
+
+    Discovery reads the environment the way ``otari serve`` without ``--config``
+    does, so OTARI_PLUGINS_DIR names a directory other than ./otari-plugins.
+    Never fatal: a plugin that breaks here is skipped so the built-in commands
+    keep working, and ``otari plugins list`` reports why.
+    """
+    try:
+        from gateway.plugins import load_plugins
+
+        registry = load_plugins(load_config(None))
+    except Exception as error:  # noqa: BLE001 a broken config must not take the CLI down
+        logger.debug("Plugin commands unavailable: %s", error)
+        return
+    for plugin in registry.loaded():
+        for group in plugin.cli_groups:
+            if group.name in cli.commands:
+                logger.warning(
+                    "Plugin %s's command %r collides with a built-in and is skipped", plugin.name, group.name
+                )
+                continue
+            cli.add_command(group)
+
 
 def main() -> None:
     """Entry point for the CLI."""
+    _attach_plugin_commands()
     cli()
 
 

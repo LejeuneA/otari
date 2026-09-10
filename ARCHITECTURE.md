@@ -166,6 +166,23 @@ Entitlement is not authentication either, and the mount point adds none. A capab
 
 Not every service goes through a port. Most code has a single implementation and stays plain (see [when a capability earns a port](#cardinal-rules-for-contributors)); only capabilities with a real second implementation are resolved through the container.
 
+## Plugins: the same seam, many times over
+
+An overlay is one build layered on Otari at build time. A **plugin** is the
+runtime form of the additive half of that seam: a Python package the gateway
+discovers at startup (an `otari.plugins` entry point, or a directory under
+`plugins.directory`), reads a manifest from, and hands a `PluginContext` to.
+Through it a plugin adds routes under `/api/v1/plugins/<name>`, `otari` command
+groups, an Alembic chain on its own version table, and a static page the
+dashboard frames. It swaps nothing: a plugin may resolve a port through
+`ctx.container` but does not rebind one, which stays the overlay's job.
+
+Where an overlay that cannot load is a refused boot, a plugin that cannot load
+is listed as failed and the gateway starts without it, because a plugin is
+optional by construction. The seam lives in `src/gateway/plugins/`; the
+user-facing guide, including the manifest and the contract, is
+[docs/plugins.md](docs/plugins.md).
+
 ## Capability lines: what the core ships vs what an overlay adds
 
 This is the open-core line: for each capability, what Otari's core ships and what an overlay can add. Most of the management plane is plain core code with no port of its own, because each of those features has a single implementation that an overlay has no reason to replace. Having no port of its own does not mean a feature is ungoverned: managing users or budgets is still authorized through `AuthzPort` and gated by `EntitlementPort` like everything else. A feature earns its own port only when a genuine second implementation is in play (see [when a capability earns a port](#cardinal-rules-for-contributors)).

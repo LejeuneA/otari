@@ -31,7 +31,7 @@ else, a fact told in two layers is a fact that will go stale in one of them, and
 is the one someone believes.
 
 ## Architecture (Big Picture)
-For the open-core OSS/enterprise seam (ports, adapters, the capability lines, and the rules for keeping the boundary), see [ARCHITECTURE.md](ARCHITECTURE.md). It is a north-star document describing the intended architecture, so ground current-state work in `src/gateway/`.
+For the open-core OSS/enterprise seam (ports, adapters, the capability lines, and the rules for keeping the boundary), see [ARCHITECTURE.md](ARCHITECTURE.md). It is a north-star document describing the intended architecture, so ground current-state work in `src/gateway/`. Plugins are the runtime form of that seam's additive half (routes, CLI groups, migrations, a dashboard page, from a package the gateway discovers at startup): the contract is [docs/plugins.md](docs/plugins.md) and the code is `src/gateway/plugins/`.
 
 ### Runtime modes
 - Mode is derived when `OTARI_MODE` is unset, and honored when set: `GatewayConfig.is_hybrid_mode` / `effective_mode` (`src/gateway/core/config.py`) return `hybrid` when the config field `mode` is `hybrid` (legacy `platform`) or, when `mode` is unset, when the platform token (`OTARI_AI_TOKEN`) is set; otherwise `standalone`. Startup validation (`validate_mode_selection`) rejects the conflicting combinations: `OTARI_MODE=hybrid` (legacy value `platform`) without a token, and `OTARI_MODE=standalone` or `OTARI_MODE=hosted` with a token set (the token would otherwise silently select hybrid). The token is resolved once at config-load time (cached on the config), not re-read from `os.getenv` on every access.
