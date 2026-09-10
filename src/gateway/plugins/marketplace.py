@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from gateway.log_config import logger
-from gateway.models.plugins import MarketplaceConfig
+from gateway.models.plugins import MarketplaceConfig, PluginManifest
 
 GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
 CACHE_TTL_SECONDS = 600.0
@@ -35,6 +35,8 @@ class MarketplaceEntry:
     stars: int | None = None
     ref: str | None = None
     updated_at: str | None = None
+    # The plugin's own declaration, when the index carried it under "manifest".
+    manifest: PluginManifest | None = None
 
 
 @dataclass
@@ -50,6 +52,13 @@ def _entry_from_index(item: dict[str, Any]) -> MarketplaceEntry | None:
     name = item.get("name")
     if not isinstance(repo, str) or not isinstance(name, str):
         return None
+    manifest: PluginManifest | None = None
+    declared = item.get("manifest")
+    if isinstance(declared, dict):
+        try:
+            manifest = PluginManifest.model_validate(declared)
+        except ValueError:
+            logger.warning("Marketplace: the verified index's manifest for %s is invalid and was ignored", name)
     return MarketplaceEntry(
         name=name,
         repo=repo,
@@ -58,6 +67,7 @@ def _entry_from_index(item: dict[str, Any]) -> MarketplaceEntry | None:
         verified=True,
         version=str(item["version"]) if item.get("version") else None,
         ref=str(item["ref"]) if item.get("ref") else None,
+        manifest=manifest,
     )
 
 

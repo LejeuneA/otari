@@ -41,6 +41,7 @@ MANIFEST = """
 name = "watcher"
 version = "0.1.0"
 package = "watcher_plugin"
+contributes = ["traffic"]
 """
 
 PACKAGE = """

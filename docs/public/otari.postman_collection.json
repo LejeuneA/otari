@@ -5636,6 +5636,41 @@
           }
         },
         {
+          "name": "Describe Plugin",
+          "request": {
+            "description": "Read a repository's plugin manifest, so an install can be understood before it happens.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "plugins",
+                "marketplace",
+                "describe"
+              ],
+              "query": [
+                {
+                  "description": "GitHub repository, as owner/name.",
+                  "disabled": false,
+                  "key": "repo",
+                  "value": ""
+                },
+                {
+                  "description": "Branch, tag, or commit; the default branch when unset.",
+                  "disabled": true,
+                  "key": "ref",
+                  "value": ""
+                }
+              ],
+              "raw": "{{baseUrl}}/api/v1/plugins/marketplace/describe?repo=&ref="
+            }
+          }
+        },
+        {
           "name": "Upload Plugin",
           "request": {
             "description": "Install a plugin from an uploaded zip or tar.gz. It loads on the next start.\n\n``force`` installs an archive whose version is older than the installed one.",

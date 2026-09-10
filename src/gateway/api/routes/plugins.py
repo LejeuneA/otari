@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from gateway.api.deps import get_config, require_deployment_operator
 from gateway.core.config import GatewayConfig
 from gateway.log_config import logger
+from gateway.models.plugins import Contribution, PluginManifest, PluginManifestError
 from gateway.plugins import LoadedPlugin, PluginRegistry
 from gateway.plugins.archive import (
     MAX_ARCHIVE_BYTES,
@@ -25,6 +26,7 @@ from gateway.plugins.archive import (
     read_install_record,
     remove_installed,
 )
+from gateway.plugins.describe import describe_github_plugin
 from gateway.plugins.marketplace import Marketplace, MarketplaceEntry
 
 router = APIRouter(prefix="/plugins", tags=["plugins"], dependencies=[Depends(require_deployment_operator)])
@@ -48,6 +50,18 @@ class InstallRecord(BaseModel):
     installed_at: str | None = None
 
 
+class PluginManifestSummary(BaseModel):
+    """What a plugin declares about itself, readable before it is installed or run."""
+
+    name: str
+    version: str
+    description: str
+    homepage: str | None = None
+    getting_started: str | None = Field(default=None, description="A page that walks a new user through setup.")
+    contributes: list[Contribution] = Field(description="What the plugin adds; enforced when it loads.")
+    config_keys: list[str] = Field(description="Keys the plugin reads from its own block of config.yml.")
+
+
 class InstalledPlugin(BaseModel):
     name: str
     version: str
@@ -62,6 +76,9 @@ class InstalledPlugin(BaseModel):
         default=None, description="Provenance, for a plugin installed from an archive."
     )
     homepage: str | None = None
+    getting_started: str | None = None
+    contributes: list[Contribution] = Field(description="What the manifest declares; what loaded is enforced to match.")
+    config_keys: list[str] = Field(default_factory=list)
     ui: PluginUiInfo | None = None
     api_prefix: str = Field(description="Where the plugin's routes mount, below the API root.")
     routes: int = Field(description="How many routes the plugin registered.")
@@ -94,6 +111,13 @@ class MarketplacePlugin(BaseModel):
     ref: str | None = Field(default=None, description="The git ref an install fetches; the default branch when unset.")
     updated_at: str | None = None
     installed: bool
+    manifest: PluginManifestSummary | None = Field(
+        default=None,
+        description=(
+            "The plugin's own declaration, when the listing carried it; "
+            "GET /plugins/marketplace/describe reads it from the repository otherwise."
+        ),
+    )
 
 
 class MarketplaceResponse(BaseModel):
@@ -140,6 +164,9 @@ def _describe(plugin: LoadedPlugin) -> InstalledPlugin:
         pending=plugin.pending,
         installed=_install_record(plugin),
         homepage=plugin.manifest.homepage,
+        getting_started=plugin.manifest.getting_started,
+        contributes=list(plugin.manifest.contributes),
+        config_keys=list(plugin.manifest.config_keys),
         ui=PluginUiInfo(label=plugin.ui.label, url=plugin.ui_url or "") if plugin.ui else None,
         api_prefix=plugin.api_prefix,
         routes=sum(len(item.router.routes) for item in plugin.routers),
@@ -199,7 +226,36 @@ def _marketplace_plugin(entry: MarketplaceEntry, registry: PluginRegistry) -> Ma
         ref=entry.ref,
         updated_at=entry.updated_at,
         installed=installed,
+        manifest=_summary(entry.manifest) if entry.manifest is not None else None,
     )
+
+
+def _summary(manifest: PluginManifest) -> PluginManifestSummary:
+    return PluginManifestSummary(
+        name=manifest.name,
+        version=manifest.version,
+        description=manifest.description,
+        homepage=manifest.homepage,
+        getting_started=manifest.getting_started,
+        contributes=list(manifest.contributes),
+        config_keys=list(manifest.config_keys),
+    )
+
+
+@router.get("/marketplace/describe", response_model=PluginManifestSummary)
+async def describe_plugin(
+    config: Annotated[GatewayConfig, Depends(get_config)],
+    repo: Annotated[str, Query(description="GitHub repository, as owner/name.", max_length=200)],
+    ref: Annotated[
+        str | None, Query(description="Branch, tag, or commit; the default branch when unset.", max_length=200)
+    ] = None,
+) -> PluginManifestSummary:
+    """Read a repository's plugin manifest, so an install can be understood before it happens."""
+    try:
+        manifest = await describe_github_plugin(repo, ref, token=config.plugins.marketplace.github_token)
+    except (PluginInstallError, PluginManifestError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    return _summary(manifest)
 
 
 @router.get("/marketplace", response_model=MarketplaceResponse)

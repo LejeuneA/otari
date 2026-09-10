@@ -29,6 +29,7 @@ name = "probe"
 version = "0.1.0"
 description = "A probe plugin."
 package = "probe_route_plugin"
+contributes = ["routes", "ui"]
 
 [plugin.ui]
 path = "static"

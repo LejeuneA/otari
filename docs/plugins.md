@@ -125,11 +125,27 @@ version = "0.1.0"
 description = "Checks a coding agent's turn against a repository's stated rules."
 package = "otari_agent_gates"     # the importable package; the manifest sits inside it
 homepage = "https://github.com/mozilla-ai/otari-agent-gates"
+getting_started = "https://github.com/mozilla-ai/otari-agent-gates#quick-start"
+contributes = ["routes", "cli", "migrations", "ui", "traffic"]
+config_keys = ["judge_timeout_seconds", "traffic"]
 
 [plugin.ui]                       # optional
 path = "static"                   # relative to the package directory
 label = "Agent gates"             # the sidebar row
 ```
+
+`contributes` is the plugin's own account of what it adds, in a closed
+vocabulary: `routes`, `cli`, `migrations`, `ui`, `traffic`. It is read before
+any code runs, so the Marketplace can say what an install will do, and it is
+enforced when the plugin loads: a plugin that registers something it did not
+declare is refused with the reason. `config_keys` names what the plugin reads
+from its own block of `config.yml`, and `getting_started` is the page the
+dashboard links a new user to once the plugin is loaded.
+
+`GET /api/v1/plugins/marketplace/describe?repo=owner/name` reads a
+repository's manifest without downloading the plugin, which is what the
+install dialog shows; a verified index entry can carry the same declaration
+under `manifest`.
 
 ```python
 # src/otari_agent_gates/__init__.py

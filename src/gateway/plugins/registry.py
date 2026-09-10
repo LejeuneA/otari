@@ -240,6 +240,26 @@ class PluginRegistry:
         return "; ".join(parts)
 
 
+def _actual_contributions(plugin: LoadedPlugin) -> set[str]:
+    """What a plugin registered, in the manifest's vocabulary."""
+    actual: set[str] = set()
+    if plugin.routers:
+        actual.add("routes")
+    if plugin.cli_groups:
+        actual.add("cli")
+    if plugin.migrations:
+        actual.add("migrations")
+    if plugin.observers:
+        actual.add("traffic")
+    if plugin.manifest.ui is not None:
+        actual.add("ui")
+    return actual
+
+
+def _undeclared_contributions(plugin: LoadedPlugin) -> set[str]:
+    return _actual_contributions(plugin) - set(plugin.manifest.contributes)
+
+
 def _version_tuple(text: str) -> tuple[int, ...]:
     """The leading numeric components of a version string, for a soft comparison."""
     numbers: list[int] = []
@@ -329,6 +349,24 @@ def _load_one(discovered: DiscoveredPlugin, settings: dict[str, Any], container:
         plugin.migrations.clear()
         plugin.observers.clear()
         return plugin
+    undeclared = _undeclared_contributions(plugin)
+    if undeclared:
+        # The declaration is what an operator read before installing; a plugin
+        # that does more than it said is refused rather than trusted.
+        plugin.status = "failed"
+        plugin.error = (
+            f"registered {', '.join(sorted(undeclared))} without declaring it in the manifest's "
+            f"contributes list ({', '.join(manifest.contributes) or 'empty'})"
+        )
+        logger.error("Plugin %s: %s", manifest.name, plugin.error)
+        plugin.routers.clear()
+        plugin.cli_groups.clear()
+        plugin.migrations.clear()
+        plugin.observers.clear()
+        return plugin
+    for declared in manifest.contributes:
+        if declared not in _actual_contributions(plugin) and declared != "ui":
+            logger.warning("Plugin %s declares %r but registered nothing of the kind", manifest.name, declared)
     if manifest.ui is not None:
         ui_dir = (discovered.package_dir / manifest.ui.path).resolve()
         if ui_dir.is_dir() and (ui_dir / "index.html").is_file():

@@ -34,6 +34,8 @@ version = "1.2.3"
 description = "A probe."
 package = "probe_plugin"
 homepage = "https://github.com/example/probe"
+contributes = ["routes", "cli", "ui"]
+config_keys = ["judge"]
 
 [plugin.ui]
 path = "static"
@@ -710,3 +712,62 @@ def test_remove_drop_tables_runs_the_chain_back_and_drops_the_version_table(tmp_
         after = {row[0] for row in db.execute("select name from sqlite_master where type='table'")}
     assert plugin.manifest.version_table not in after
     assert not (before - {plugin.manifest.version_table}) & after
+
+
+def test_a_plugin_that_registers_more_than_it_declared_is_refused(tmp_path: Path) -> None:
+    write_plugin(
+        tmp_path,
+        body=PACKAGE.replace(
+            "def register(ctx: PluginContext) -> None:",
+            "class Watcher:\n    def on_request(self, event):\n        return None\n\n\n"
+            "def register(ctx: PluginContext) -> None:\n    ctx.add_traffic_observer(Watcher())",
+        ),
+    )
+
+    registry = load_plugins(config_for(tmp_path))
+
+    plugin = registry.get("probe")
+    assert plugin is not None
+    assert plugin.status == "failed"
+    assert "registered traffic without declaring it" in (plugin.error or "")
+    assert plugin.routers == [] and plugin.observers == []
+
+
+def test_manifest_contributions_are_a_closed_vocabulary() -> None:
+    with pytest.raises(PluginManifestError, match="invalid"):
+        parse_manifest('[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\ncontributes = ["kernel"]')
+    manifest = parse_manifest(
+        '[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\ncontributes = ["traffic"]\ngetting_started = "https://x/y"'
+    )
+    assert manifest.contributes == ["traffic"]
+    assert manifest.getting_started == "https://x/y"
+
+
+def fake_github_repo(manifest_text: str | None) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.github.com":
+            paths = ["README.md", "src/probe_plugin/otari-plugin.toml"] if manifest_text is not None else ["README.md"]
+            return httpx.Response(200, json={"tree": [{"path": path, "type": "blob"} for path in paths]})
+        assert request.url.host == "raw.githubusercontent.com"
+        assert request.url.path == "/example/probe/HEAD/src/probe_plugin/otari-plugin.toml"
+        return httpx.Response(200, text=manifest_text or "")
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+async def test_describe_reads_a_repository_manifest_before_install() -> None:
+    from gateway.plugins.describe import describe_github_plugin
+
+    manifest = await describe_github_plugin("example/probe", None, transport=fake_github_repo(MANIFEST))
+
+    assert manifest.name == "probe"
+    assert manifest.contributes == ["routes", "cli", "ui"]
+
+
+@pytest.mark.asyncio
+async def test_describe_refuses_a_repository_with_no_manifest() -> None:
+    from gateway.plugins.describe import describe_github_plugin
+
+    with pytest.raises(PluginInstallError, match="holds no otari-plugin.toml"):
+        await describe_github_plugin("example/empty", None, transport=fake_github_repo(None))

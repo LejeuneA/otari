@@ -385,6 +385,7 @@ GET /api/v1/web-search/search                                                 # 
 # document: the generator runs with plugins disabled.
 GET /api/v1/plugins                                                           # operator dashboard
 GET /api/v1/plugins/marketplace                                               # operator dashboard
+GET /api/v1/plugins/marketplace/describe                                      # operator dashboard
 POST /api/v1/plugins/upload                                                   # operator dashboard
 POST /api/v1/plugins/install                                                  # operator dashboard
 DELETE /api/v1/plugins/{name}                                                 # operator dashboard
