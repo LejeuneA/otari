@@ -62,7 +62,7 @@ from gateway.main import (
 # outside this repository's control; see the spec's D8.
 FROZEN_ROOT_PATHS = frozenset({"/auth/{provider}/callback", "/metrics"})
 # The SPA shell and its assets. Not API, never versioned.
-SHELL_PATHS = frozenset({"/", "/welcome", "/favicon.svg", "/dashboard-build.json"})
+SHELL_PATHS = frozenset({"/", "/welcome", "/favicon.svg", "/dashboard-build.json", "/dashboard.css"})
 # A plugin's page is shell content too: static files the dashboard frames,
 # served beside its own assets rather than under the API.
 SHELL_MOUNTS = ("/assets", "/pwa", "/fonts", "/plugins/")

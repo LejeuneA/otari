@@ -758,6 +758,17 @@ def create_app(config: GatewayConfig) -> FastAPI:
         @app.get("/dashboard-build.json", include_in_schema=False)
         async def dashboard_build() -> dict[str, str]:
             return {"build": get_dashboard_build_id(dashboard_dir), "version": __version__}
+
+        # The dashboard's own stylesheet at a stable path, so a plugin's page can
+        # link it and wear this deployment's theme (tokens, HeroUI component
+        # styles, fonts) rather than bundling a copy that drifts. Resolved per
+        # request, since the hashed name changes with every build.
+        @app.get("/dashboard.css", include_in_schema=False)
+        async def dashboard_stylesheet() -> Response:
+            stylesheets = sorted((dashboard_dir / "assets").glob("*.css"))
+            if not stylesheets:
+                return JSONResponse({"detail": "Not Found"}, status_code=status.HTTP_404_NOT_FOUND)
+            return FileResponse(stylesheets[0], media_type="text/css")
     else:
         # A missing bundle means nobody built it, which is the ordinary state of a
         # source checkout now that the bundle is gitignored rather than committed.

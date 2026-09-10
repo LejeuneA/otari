@@ -182,6 +182,17 @@ What each contribution means:
   so the page calls the plugin's routes with the session cookie and needs no
   token handling of its own. Build it with whatever you like; hash-based
   client-side routing avoids needing server rewrites under the static mount.
+
+  To look like the rest of the dashboard, link the dashboard's own stylesheet
+  rather than bundling a theme: `<link rel="stylesheet" href="/dashboard.css">`
+  serves the current build's CSS, which carries the semantic tokens
+  (`--color-surface`, `--color-muted`, and so on), the HeroUI component styles,
+  and the self-hosted fonts. Use HeroUI components and the same token names,
+  and mirror the theme the dashboard set on its own root element (a
+  `data-theme` attribute and a `dark` class), which a same-origin frame can
+  read from `window.parent.document.documentElement` and watch with a
+  `MutationObserver`. The dashboard frames the page under its own title, so
+  the page should not repeat a title or a sidebar of its own.
 - **`ctx.container`** is the composition root, for a plugin that needs a port.
   It is `None` when plugins are loaded for the command line alone.
 
