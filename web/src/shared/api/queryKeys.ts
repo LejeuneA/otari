@@ -106,6 +106,10 @@ export const PASSKEYS = "passkeys"
 // changes `installed` on the listing as well, so the writes invalidate both.
 export const PLUGINS = "plugins"
 export const PLUGIN_MARKETPLACE = "plugin-marketplace"
+// One repository's manifest, read before an install. Keyed on the repository
+// and ref, and not under the marketplace key: an install changes the listing
+// and not what the repository declares.
+export const PLUGIN_DESCRIBE = "plugin-describe"
 
 // How often an open tab asks whether the app it is running is still the one the
 // gateway serves. Cheap (a hash of one small file) and only while the tab is

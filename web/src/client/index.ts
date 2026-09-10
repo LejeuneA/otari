@@ -413,6 +413,9 @@ export type PluginProblem = Schemas["PluginProblem"]
 export type PluginUiInfo = Schemas["PluginUiInfo"]
 export type MarketplaceResponse = Schemas["MarketplaceResponse"]
 export type MarketplacePlugin = Schemas["MarketplacePlugin"]
+export type PluginManifestSummary = Schemas["PluginManifestSummary"]
+/** One thing a plugin declares it adds; the gateway refuses what is not declared. */
+export type PluginContribution = PluginManifestSummary["contributes"][number]
 export type InstallPluginRequest = Schemas["InstallPluginRequest"]
 export type InstallPluginResponse = Schemas["InstallPluginResponse"]
 

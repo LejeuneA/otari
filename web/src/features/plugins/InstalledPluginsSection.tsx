@@ -8,6 +8,7 @@ import { Chip } from "@/design-system/indicators/Chip"
 import { SettingsGroup } from "@/design-system/layout/SettingsGroup"
 import { PluginList, PluginRow } from "@/features/plugins/PluginRow"
 import {
+  contributionChipLabel,
   pluginSourceLabel,
   pluginStatusChip,
 } from "@/features/plugins/pluginPresentation"
@@ -47,7 +48,19 @@ export function InstalledPluginsSection({
               <PluginRow
                 key={plugin.name}
                 title={plugin.name}
-                badges={<Chip tone={status.tone}>{status.label}</Chip>}
+                badges={
+                  <>
+                    <Chip tone={status.tone}>{status.label}</Chip>
+                    {plugin.contributes.map((contribution) => (
+                      <Chip
+                        key={contribution}
+                        tone={contribution === "traffic" ? "info" : "neutral"}
+                      >
+                        {contributionChipLabel(contribution)}
+                      </Chip>
+                    ))}
+                  </>
+                }
                 description={plugin.description}
                 error={plugin.error}
                 meta={
@@ -62,6 +75,16 @@ export function InstalledPluginsSection({
                         className="text-link"
                       >
                         Homepage
+                      </ExternalLink>
+                    ) : null}
+                    {plugin.getting_started ? (
+                      <ExternalLink
+                        href={plugin.getting_started}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-link"
+                      >
+                        Getting started
                       </ExternalLink>
                     ) : null}
                   </>

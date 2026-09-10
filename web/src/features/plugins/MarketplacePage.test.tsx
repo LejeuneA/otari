@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type {
   InstalledPlugin,
   MarketplaceResponse,
+  PluginManifestSummary,
   PluginsResponse,
 } from "@/client"
 import { MarketplacePage } from "@/features/plugins/MarketplacePage"
@@ -14,6 +15,7 @@ import {
   installedPlugin,
   marketplacePlugin,
   marketplaceResponse,
+  pluginManifest,
   pluginsResponse,
 } from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
@@ -24,6 +26,9 @@ interface Call {
   body: BodyInit | null | undefined
 }
 
+/** What the describe endpoint answers: a manifest, or a refusal with its reason. */
+type DescribeAnswer = PluginManifestSummary | { status: number; detail: string }
+
 /**
  * The gateway, with one piece of state: an install or a removal flips
  * `restart_required` and adds or drops the plugin, the way the real one does,
@@ -32,11 +37,14 @@ interface Call {
 function mockApi({
   plugins = pluginsResponse(),
   marketplace = marketplaceResponse(),
+  describe = pluginManifest(),
   writeStatus,
   writeDetail,
 }: {
   plugins?: PluginsResponse
   marketplace?: MarketplaceResponse
+  /** A promise lets a test hold the answer while it looks at the loading line. */
+  describe?: DescribeAnswer | Promise<DescribeAnswer>
   /** What every write answers with, for the refusal cases. */
   writeStatus?: number
   writeDetail?: string
@@ -52,6 +60,12 @@ function mockApi({
         { detail: writeDetail ?? "refused" },
         { status: writeStatus },
       )
+    }
+    if (url.startsWith(`${API_ROOT}/plugins/marketplace/describe?`)) {
+      const answer = await describe
+      return "status" in answer
+        ? Response.json({ detail: answer.detail }, { status: answer.status })
+        : Response.json(answer)
     }
     if (url.startsWith(`${API_ROOT}/plugins/marketplace`)) {
       return Response.json(marketplace)
@@ -91,6 +105,12 @@ function mockApi({
 
 function writes(calls: Call[]): Call[] {
   return calls.filter((call) => call.method !== "GET")
+}
+
+function describes(calls: Call[]): Call[] {
+  return calls.filter((call) =>
+    call.url.startsWith(`${API_ROOT}/plugins/marketplace/describe?`),
+  )
 }
 
 async function renderPage() {
@@ -157,6 +177,18 @@ describe("MarketplacePage", () => {
     expect(within(installed).getByText("Loaded")).toBeVisible()
     expect(within(installed).getByText("v0.1.0")).toBeVisible()
     expect(within(installed).getByText("Plugins directory")).toBeVisible()
+    // What the manifest declares, one chip each, and where to start.
+    const [firstRow] = within(installed).getAllByRole("listitem")
+    for (const chip of ["API routes", "CLI", "Tables", "Page"]) {
+      expect(within(firstRow).getByText(chip)).toBeVisible()
+    }
+    expect(within(firstRow).queryByText("Watches traffic")).toBeNull()
+    expect(
+      within(firstRow).getByRole("link", { name: "Getting started" }),
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/mozilla-ai/otari-agent-gates#getting-started",
+    )
     // The page a loaded plugin ships is one click away, at its own route.
     expect(
       within(installed).getByRole("link", { name: "Open Agent gates" }),
@@ -393,5 +425,135 @@ describe("MarketplacePage", () => {
       await screen.findByText(/Restart the gateway to apply it/),
     ).toBeVisible()
     expect(screen.queryByRole("alertdialog")).toBeNull()
+  })
+
+  it("says what a plugin adds from the listing's own manifest, without a describe call", async () => {
+    const calls = mockApi({
+      marketplace: marketplaceResponse({
+        verified: [
+          {
+            ...VERIFIED,
+            manifest: pluginManifest({
+              name: "agent-gates",
+              contributes: ["routes", "cli", "migrations", "ui"],
+              config_keys: ["agent_gates.policy", "agent_gates.strict"],
+              getting_started:
+                "https://github.com/mozilla-ai/otari-agent-gates#getting-started",
+            }),
+          },
+        ],
+      }),
+    })
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      await screen.findByRole("button", { name: "Verified (1)" }),
+    )
+    await user.click(await screen.findByRole("button", { name: "Install" }))
+    const dialog = await screen.findByRole("alertdialog")
+
+    expect(within(dialog).getByText("What it adds")).toBeVisible()
+    const rows = within(dialog)
+      .getAllByRole("listitem")
+      .map((row) => row.textContent)
+    expect(rows).toEqual([
+      "API routes under /api/v1/plugins/agent-gates",
+      "otari command groups",
+      "database tables of its own",
+      "a page in the dashboard",
+    ])
+    expect(
+      within(dialog).getByText(/Reads these config keys/),
+    ).toHaveTextContent("agent_gates.policy, agent_gates.strict")
+    expect(
+      within(dialog).getByRole("link", { name: "Getting started" }),
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/mozilla-ai/otari-agent-gates#getting-started",
+    )
+    expect(describes(calls)).toHaveLength(0)
+  })
+
+  it("reads the manifest from the repository when the listing has none", async () => {
+    let answer: (manifest: DescribeAnswer) => void = () => {}
+    const calls = mockApi({
+      marketplace: marketplaceResponse({
+        community: [{ ...COMMUNITY, ref: "v0.2.0" }],
+      }),
+      describe: new Promise<DescribeAnswer>((resolve) => {
+        answer = resolve
+      }),
+    })
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      await screen.findByRole("button", { name: "Community (1)" }),
+    )
+    await user.click(await screen.findByRole("button", { name: "Install" }))
+    const dialog = await screen.findByRole("alertdialog")
+
+    expect(
+      await within(dialog).findByText("Reading the plugin's manifest…"),
+    ).toBeVisible()
+    expect(describes(calls)).toHaveLength(1)
+    expect(describes(calls)[0].url).toBe(
+      `${API_ROOT}/plugins/marketplace/describe?repo=example%2Fotari-request-log&ref=v0.2.0`,
+    )
+
+    answer(pluginManifest({ contributes: ["traffic"], config_keys: [] }))
+    expect(await within(dialog).findByText("What it adds")).toBeVisible()
+    expect(
+      within(dialog).getByText(
+        "watches inference traffic passing through this gateway",
+      ),
+    ).toBeVisible()
+    expect(within(dialog).queryByText(/Reads these config keys/)).toBeNull()
+    expect(
+      within(dialog).queryByText("Reading the plugin's manifest…"),
+    ).toBeNull()
+    // The warning and the typed gate are unchanged by what was read.
+    expect(within(dialog).getByText(/has not reviewed/)).toBeVisible()
+    expect(
+      within(dialog).getByRole("button", { name: "Install" }),
+    ).toBeDisabled()
+  })
+
+  it("shows why a plugin could not be described and still lets it be installed", async () => {
+    const calls = mockApi({
+      marketplace: marketplaceResponse({ community: [COMMUNITY] }),
+      describe: {
+        status: 422,
+        detail: "The repository has no otari-plugin.toml.",
+      },
+    })
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      await screen.findByRole("button", { name: "Community (1)" }),
+    )
+    await user.click(await screen.findByRole("button", { name: "Install" }))
+    const dialog = await screen.findByRole("alertdialog")
+
+    expect(
+      await within(dialog).findByText(
+        "The repository has no otari-plugin.toml.",
+      ),
+    ).toBeVisible()
+    expect(
+      within(dialog).getByText(/could not be described before install/),
+    ).toBeVisible()
+    expect(within(dialog).queryByText("What it adds")).toBeNull()
+    // Not the install's own refusal slot, which is still empty.
+    expect(within(dialog).queryByRole("alert")).toBeNull()
+
+    const confirm = within(dialog).getByRole("button", { name: "Install" })
+    await user.type(within(dialog).getByRole("textbox"), COMMUNITY.repo)
+    expect(confirm).toBeEnabled()
+    await user.click(confirm)
+    await waitFor(() => expect(writes(calls)).toHaveLength(1))
+    expect(writes(calls)[0].url).toBe(`${API_ROOT}/plugins/install`)
   })
 })

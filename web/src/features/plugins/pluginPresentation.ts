@@ -1,4 +1,4 @@
-import type { PluginStatus } from "@/client"
+import type { PluginContribution, PluginStatus } from "@/client"
 import type { ChipTone } from "@/design-system/indicators/Chip"
 import { API_ROOT } from "@/shared/api/client"
 
@@ -16,6 +16,46 @@ export function pluginStatusChip(status: PluginStatus): {
       return { tone: "neutral", label: "Disabled" }
     case "pending_restart":
       return { tone: "warning", label: "Restart required" }
+  }
+}
+
+/**
+ * What one declared contribution means, spelled out for the install dialog.
+ * `name` is the plugin's, because its routes mount under it.
+ */
+export function contributionDescription(
+  contribution: PluginContribution,
+  name: string,
+): string {
+  switch (contribution) {
+    case "routes":
+      return `API routes under /api/v1/plugins/${name}`
+    case "cli":
+      return "otari command groups"
+    case "migrations":
+      return "database tables of its own"
+    case "ui":
+      return "a page in the dashboard"
+    case "traffic":
+      return "watches inference traffic passing through this gateway"
+  }
+}
+
+/** The same contribution, short enough for a chip on the installed row. */
+export function contributionChipLabel(
+  contribution: PluginContribution,
+): string {
+  switch (contribution) {
+    case "routes":
+      return "API routes"
+    case "cli":
+      return "CLI"
+    case "migrations":
+      return "Tables"
+    case "ui":
+      return "Page"
+    case "traffic":
+      return "Watches traffic"
   }
 }
 

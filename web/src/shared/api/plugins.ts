@@ -4,10 +4,16 @@ import type {
   InstallPluginRequest,
   InstallPluginResponse,
   MarketplaceResponse,
+  PluginManifestSummary,
   PluginsResponse,
 } from "@/client"
 import { apiFetch, longRequestSignal } from "@/shared/api/client"
-import { NO_RETRY, PLUGIN_MARKETPLACE, PLUGINS } from "@/shared/api/queryKeys"
+import {
+  NO_RETRY,
+  PLUGIN_DESCRIBE,
+  PLUGIN_MARKETPLACE,
+  PLUGINS,
+} from "@/shared/api/queryKeys"
 
 // Operator-only, all of it: `GET /plugins` answers 403 to anyone else, so a
 // caller gates `enabled` on the caller axis rather than reading the refusal.
@@ -41,6 +47,34 @@ export function useMarketplace(refresh = false) {
     // Backed by two outbound fetches gateway-side, so a slow GitHub is the
     // reason this fails, and three sequential tries would hold the socket for
     // the whole time.
+    ...NO_RETRY,
+  })
+}
+
+/**
+ * What a repository's plugin declares, read before it is installed. A 422
+ * carries the gateway's own reason (no manifest, or one it could not read),
+ * which the caller shows as it is.
+ */
+export function useDescribePlugin(
+  repo: string,
+  ref: string | null | undefined,
+  enabled: boolean,
+) {
+  const query = new URLSearchParams({ repo })
+  if (ref) query.set("ref", ref)
+  return useQuery({
+    queryKey: [PLUGIN_DESCRIBE, { repo, ref: ref ?? null }],
+    queryFn: () =>
+      apiFetch<PluginManifestSummary>(
+        `/plugins/marketplace/describe?${query.toString()}`,
+      ),
+    // A manifest changes when the repository does, and a dialog opened twice
+    // in a sitting should not read GitHub twice.
+    staleTime: 5 * 60_000,
+    enabled,
+    // One outbound fetch gateway-side, with the same slow-GitHub failure mode
+    // as the listing.
     ...NO_RETRY,
   })
 }

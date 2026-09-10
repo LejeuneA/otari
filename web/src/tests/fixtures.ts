@@ -24,6 +24,7 @@ import type {
   OrganizationSpendCeiling,
   OrgProviderKey,
   PendingOrganizationInvitation,
+  PluginManifestSummary,
   PluginsResponse,
   PricingResponse,
   ScopedBudget,
@@ -729,6 +730,10 @@ export function installedPlugin(
     status: "loaded",
     error: null,
     homepage: "https://github.com/mozilla-ai/otari-agent-gates",
+    getting_started:
+      "https://github.com/mozilla-ai/otari-agent-gates#getting-started",
+    contributes: ["routes", "cli", "migrations", "ui"],
+    config_keys: ["agent_gates"],
     ui: { label: "Agent gates", url: "/plugins/agent-gates/ui/" },
     api_prefix: "/plugins/agent-gates",
     routes: 3,
@@ -749,6 +754,23 @@ export function pluginsResponse(
     // the callout turns it off.
     install_allowed: true,
     restart_required: false,
+    ...overrides,
+  }
+}
+
+/** What a repository's manifest declares, as the describe endpoint reports it. */
+export function pluginManifest(
+  overrides: Partial<PluginManifestSummary> = {},
+): PluginManifestSummary {
+  return {
+    name: "otari-request-log",
+    version: "0.2.0",
+    description: "Writes every request to a file.",
+    homepage: "https://github.com/example/otari-request-log",
+    getting_started:
+      "https://github.com/example/otari-request-log#getting-started",
+    contributes: ["routes", "traffic"],
+    config_keys: ["request_log.path"],
     ...overrides,
   }
 }
