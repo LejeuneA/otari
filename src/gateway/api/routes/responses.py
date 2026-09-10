@@ -39,11 +39,12 @@ from gateway.api.routes._pipeline import (
 from gateway.api.routes._platform import ResolvedAttempt, SettledCost, build_attempt_client_args
 from gateway.api.routes._schema_derive import SESSION_LABEL_DESC, SESSION_LABEL_MAX_LENGTH, derive_request_base
 from gateway.api.routes._tools import _strip_gateway_fields
-from gateway.core.config import GatewayConfig
+from gateway.core.config import CONVERSATION_HEADER, GatewayConfig
 from gateway.core.usage import GatewayUsage
 from gateway.log_config import logger
 from gateway.models.guardrails import GuardrailConfig
 from gateway.models.mcp import MAX_MCP_SERVER_IDS, McpServerConfig
+from gateway.plugins.traffic import conversation_from_responses
 from gateway.services.log_writer import LogWriter
 from gateway.services.mcp_loop import ToolBackend
 from gateway.services.mcp_loop_responses import (
@@ -580,6 +581,12 @@ async def create_response(
         tools=request_body.tools,
         mcp_servers=request_body.mcp_servers,
         mcp_server_ids=request_body.mcp_server_ids,
+        conversation=conversation_from_responses(
+            request_body.model,
+            getattr(request_body, "instructions", None),
+            request_body.input,
+            session=request_body.session_label or raw_request.headers.get(CONVERSATION_HEADER) or "",
+        ),
         max_tool_iterations=request_body.max_tool_iterations,
         tools_header=request_body.tools_header,
     )

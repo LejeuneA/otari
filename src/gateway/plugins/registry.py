@@ -73,6 +73,7 @@ class LoadedPlugin:
     routers: list[PluginRouter] = field(default_factory=list)
     cli_groups: list[click.Group] = field(default_factory=list)
     migrations: list[Path] = field(default_factory=list)
+    observers: list[Any] = field(default_factory=list)
     ui: UiContribution | None = None
 
     @property
@@ -142,6 +143,19 @@ class PluginContext:
             raise PluginError(msg)
         self._plugin.migrations.append(path)
 
+    def add_traffic_observer(self, observer: Any) -> None:
+        """Watch inference traffic: see ``gateway.plugins.traffic``.
+
+        ``observer`` implements ``on_request`` and/or ``on_tool_call``, sync or
+        async. Its annotations reach the usage row; its decisions are recorded.
+        """
+        if not any(callable(getattr(observer, name, None)) for name in ("on_request", "on_tool_call")):
+            msg = (
+                f"plugin {self.name!r} added a traffic observer with neither on_request nor on_tool_call: {observer!r}"
+            )
+            raise PluginError(msg)
+        self._plugin.observers.append(observer)
+
 
 class PluginRegistry:
     """Every plugin this process discovered, loaded or not, in load order."""
@@ -162,6 +176,10 @@ class PluginRegistry:
 
     def loaded(self) -> list[LoadedPlugin]:
         return [plugin for plugin in self._plugins if plugin.status == "loaded"]
+
+    def traffic_observers(self) -> list[tuple[str, Any]]:
+        """Every loaded plugin's traffic observers, as (plugin name, observer) pairs."""
+        return [(plugin.name, observer) for plugin in self.loaded() for observer in plugin.observers]
 
     def record_pending(self, manifest: PluginManifest, package_dir: Path, install_dir: Path) -> LoadedPlugin:
         """Record a plugin installed into the directory since startup.
@@ -309,6 +327,7 @@ def _load_one(discovered: DiscoveredPlugin, settings: dict[str, Any], container:
         plugin.routers.clear()
         plugin.cli_groups.clear()
         plugin.migrations.clear()
+        plugin.observers.clear()
         return plugin
     if manifest.ui is not None:
         ui_dir = (discovered.package_dir / manifest.ui.path).resolve()
@@ -332,6 +351,10 @@ def load_plugins(config: "GatewayConfig", container: "Container | None" = None) 
     """
     plugins_config: PluginsConfig = config.plugins
     directory = plugins_directory(config)
+    if not plugins_config.enabled:
+        registry = PluginRegistry(directory, [], [])
+        logger.info("Plugins: disabled by configuration")
+        return registry
     discovered, problems = discover_plugins(directory)
     for problem in problems:
         logger.warning("Plugin at %s (%s) could not be described: %s", problem.location, problem.source, problem.error)

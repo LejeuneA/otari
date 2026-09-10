@@ -46,9 +46,10 @@ def generate_openapi_spec() -> dict[str, object]:
             web_search_provider="tavily",
             web_search_provider_api_key="openapi-generation-placeholder",
             web_search_backend_token="openapi-generation-placeholder",
-            # An empty plugins directory, so a plugin dropped into ./otari-plugins
-            # on this machine is neither run here nor written into the contract.
-            plugins=PluginsConfig(directory=str(Path(tmpdir) / "plugins")),
+            # The published contract is Otari's own: a plugin installed beside this
+            # checkout mounts routes that are its contract, not this document's,
+            # so plugins are neither run here nor written into it.
+            plugins=PluginsConfig(enabled=False),
         )
         app = create_app(config)
         return cast(dict[str, object], app.openapi())

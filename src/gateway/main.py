@@ -374,10 +374,11 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             log_writer = NoopLogWriter()
         else:
             init_db(config)
-            if config.auto_migrate:
+            plugins = getattr(app.state, "plugins", None)
+            if config.auto_migrate and plugins is not None:
                 # After Otari's own chain, which init_db ran, so a plugin may
                 # reference a core table. Each plugin stamps its own version table.
-                run_plugin_migrations(config.database_url, app.state.plugins)
+                run_plugin_migrations(config.database_url, plugins)
             async with create_session() as session:
                 # Persisted dashboard overrides win over config/env; apply them
                 # before pricing init so default-pricing behavior is consistent.

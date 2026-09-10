@@ -39,12 +39,13 @@ from gateway.api.routes._pipeline import (
 from gateway.api.routes._platform import ResolvedAttempt, SettledCost
 from gateway.api.routes._schema_derive import SESSION_LABEL_DESC, SESSION_LABEL_MAX_LENGTH, derive_request_base
 from gateway.api.routes._tools import _strip_gateway_fields
-from gateway.core.config import GatewayConfig
+from gateway.core.config import CONVERSATION_HEADER, GatewayConfig
 from gateway.core.usage import GatewayUsage
 from gateway.core.usage_source import PLAYGROUND_USAGE_ENDPOINT
 from gateway.log_config import logger
 from gateway.models.guardrails import GuardrailConfig
 from gateway.models.mcp import MAX_MCP_SERVER_IDS, McpServerConfig
+from gateway.plugins.traffic import conversation_from_chat
 from gateway.ports.model_provider_port import ModelProviderPort
 from gateway.services.log_writer import LogWriter
 from gateway.services.mcp_loop import (
@@ -499,6 +500,11 @@ async def run_chat_completion(
         mcp_server_ids=request.mcp_server_ids,
         max_tool_iterations=request.max_tool_iterations,
         tools_header=request.tools_header,
+        conversation=conversation_from_chat(
+            request.model,
+            request.messages,
+            session=request.session_label or raw_request.headers.get(CONVERSATION_HEADER) or "",
+        ),
     )
 
     request_fields = _strip_gateway_fields(

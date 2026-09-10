@@ -88,7 +88,7 @@ def register_routers(app: FastAPI, config: GatewayConfig) -> None:
     api = APIRouter(prefix=API_ROOT)
     _register_core_routers(api, config)
     _register_contributed_routers(api, app.state.container)
-    _register_plugin_routers(api, app.state.plugins)
+    _register_plugin_routers(api, getattr(app.state, "plugins", None))
     if config.is_hybrid_mode:
         api.include_router(hybrid_mode.router)
     elif config.is_hosted_mode:
@@ -141,13 +141,16 @@ def _refuse_when_failed(plugin: LoadedPlugin) -> Callable[[], None]:
     return dependency
 
 
-def _register_plugin_routers(api: APIRouter, registry: PluginRegistry) -> None:
+def _register_plugin_routers(api: APIRouter, registry: PluginRegistry | None) -> None:
     """Mount every loaded plugin's routers under ``/plugins/<name>``.
 
     No entitlement gate: a plugin is loaded or it is not, and the operator
     chose which. Authentication is the plugin's own per route, like a
-    contributed router's.
+    contributed router's. ``None`` is an app built without ``create_app``,
+    as some tests do, and mounts nothing.
     """
+    if registry is None:
+        return
     for plugin in registry.loaded():
         for mounted in plugin.routers:
             dependencies = [Depends(_refuse_when_failed(plugin))]

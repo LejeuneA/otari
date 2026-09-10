@@ -12,7 +12,7 @@ from time import monotonic
 from typing import Annotated, Any, Literal, NamedTuple, TypeVar, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, and_, case, func, null, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -203,6 +203,10 @@ class UsageEntry(BaseModel):
     # the fallback is what keeps a row written by an older gateway renderable.
     billing_meters: MeterMap | None
     pricing_breakdown: Sequence[ChargeLine] | None
+    plugin_annotations: dict[str, Any] | None = Field(
+        default=None,
+        description="What plugin traffic observers annotated on this request, keyed by plugin name.",
+    )
     cost: float | None
     status: str
     error_message: str | None
@@ -257,6 +261,7 @@ class UsageEntry(BaseModel):
             cache_write_1h_tokens=log.cache_write_1h_tokens,
             billing_meters=log.billing_meters,
             pricing_breakdown=log.pricing_breakdown,
+            plugin_annotations=log.plugin_annotations,
             cost=as_float(log.cost),
             status=log.status,
             error_message=log.error_message,

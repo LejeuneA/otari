@@ -53,11 +53,12 @@ from gateway.api.routes._platform import (
 )
 from gateway.api.routes._schema_derive import SESSION_LABEL_DESC, SESSION_LABEL_MAX_LENGTH, derive_request_base
 from gateway.api.routes._tools import _strip_gateway_fields
-from gateway.core.config import GatewayConfig
+from gateway.core.config import CONVERSATION_HEADER, GatewayConfig
 from gateway.core.usage import GatewayUsage
 from gateway.log_config import logger
 from gateway.models.guardrails import GuardrailConfig
 from gateway.models.mcp import MAX_MCP_SERVER_IDS, McpServerConfig
+from gateway.plugins.traffic import conversation_from_messages
 from gateway.services.log_writer import LogWriter
 from gateway.services.mcp_loop import ToolBackend
 from gateway.services.mcp_loop_messages import (
@@ -718,6 +719,15 @@ async def create_message(
         ctx=ctx,
         response=response,
         guardrails=request.guardrails,
+        conversation=conversation_from_messages(
+            request.model,
+            request.system,
+            request.messages,
+            session=request.session_label
+            or (str(user_from_metadata) if user_from_metadata else None)
+            or raw_request.headers.get(CONVERSATION_HEADER)
+            or "",
+        ),
         guardrail_text=latest_user_text(request.messages),
         tools=request.tools,
         mcp_servers=request.mcp_servers,

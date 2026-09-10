@@ -193,6 +193,8 @@ What each contribution means:
   read from `window.parent.document.documentElement` and watch with a
   `MutationObserver`. The dashboard frames the page under its own title, so
   the page should not repeat a title or a sidebar of its own.
+- **A traffic observer** watches inference requests as they pass through the
+  gateway. See [Watching traffic](#watching-traffic) below.
 - **`ctx.container`** is the composition root, for a plugin that needs a port.
   It is `None` when plugins are loaded for the command line alone.
 
@@ -206,6 +208,58 @@ For a plugin installed from a directory, the directory holding the package is
 put on `sys.path`. A src layout (`src/<package>/`) and a flat layout
 (`<package>/`) both work, with or without the one extra directory a GitHub
 archive nests everything under.
+
+## Watching traffic
+
+An agent that talks to its model through Otari puts its whole conversation on
+the wire: every tool call it made and every result it got back arrive in the
+next request's messages, and the model's next tool call leaves in the response.
+A plugin can watch that without installing anything on the client:
+
+```python
+from gateway.plugins.traffic import RequestDecision, ToolCallDecision
+
+
+class Watcher:
+    def on_request(self, event):
+        # event.caller: api_key_id, user_id, workspace_id, organization_id
+        # event.conversation: api, model, system, turns, session_key
+        last = event.conversation.last_turn
+        ran = [call.arguments.get("command") for call in last.tool_calls] if last else []
+        return RequestDecision(annotations={"ran": ran})
+
+    async def on_tool_call(self, event):
+        if event.tool_call.name == "Bash" and "--force" in event.tool_call.arguments.get("command", ""):
+            return ToolCallDecision(deny="Never force-push.", annotations={"fired": ["no-force-push"]})
+        return None
+
+
+def register(ctx):
+    ctx.add_traffic_observer(Watcher())
+```
+
+The shapes are provider-neutral: a `Conversation` is a system prompt and a
+list of assistant `Turn`s, each with the `ToolCall`s the model made and the
+`ToolResult`s the client returned, whichever of the chat, messages, or
+responses APIs carried them. `session_key` is the request's `session_label`,
+Claude Code's metadata user id, or the `Otari-Conversation-Id` header, and a
+digest of the system prompt and first user turn when none is present.
+
+`on_request` runs before dispatch, after the input guardrails. `on_tool_call`
+runs for each tool call in the model's response, once the call is whole: a
+stream keeps flowing while a call's fragments are collected. Either method may
+be sync or async, and either may be omitted.
+
+What comes back is recorded, not applied. `annotations` from every observer are
+merged under the plugin's name into the usage row's `plugin_annotations`
+column and read back through the usage API; a `deny` is written there as
+`would_deny`. Enforcement, replacing a tool call or injecting a system
+message, is a later phase and will keep this contract.
+
+Observers are fenced. One that raises is logged and skipped, one that runs
+past `plugins.observer_timeout_ms` (default 250) is cut off and skipped, and
+nothing runs at all when no plugin registered one. A plugin can slow a request
+by that budget per call, and no more.
 
 ## Getting listed
 

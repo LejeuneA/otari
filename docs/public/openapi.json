@@ -13914,6 +13914,19 @@
             "title": "Model",
             "type": "string"
           },
+          "plugin_annotations": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What plugin traffic observers annotated on this request, keyed by plugin name.",
+            "title": "Plugin Annotations"
+          },
           "policy_name": {
             "anyOf": [
               {

@@ -743,6 +743,8 @@ def _plugin_command_groups(config_path: str | None) -> dict[str, click.Group]:
     Never fatal: a plugin that breaks here is left out so the built-in commands
     keep working, and ``otari plugins list`` reports why.
     """
+    if not isinstance(cli, click.Group):
+        return
     try:
         from gateway.plugins import load_plugins
 

@@ -107,5 +107,6 @@ providers:
 #   directory: ./otari-plugins
 #   allow_install: false
 #   disabled: []
+#   observer_timeout_ms: 250    # budget per plugin traffic-observer call
 #   agent-gates:
 #     # a plugin's own settings, under its name

@@ -737,6 +737,10 @@ class UsageLog(Base):
     cache_tokens_in_prompt: Mapped[bool | None] = mapped_column()
     billing_meters: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     pricing_breakdown: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    # What plugin traffic observers annotated on this request, keyed by plugin
+    # name (``gateway.plugins.traffic``). Opaque to the gateway; read back
+    # through the usage API. NULL when no observer said anything.
+    plugin_annotations: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     # The settled amount, and the accounting truth for this row
     # (mozilla-ai/otari-ai#1751). Exact to the micro-dollar; see
     # ``models/money.py`` for what that costs on each engine.
@@ -835,6 +839,7 @@ class UsageLog(Base):
             "cache_tokens_in_prompt": self.cache_tokens_in_prompt,
             "billing_meters": self.billing_meters,
             "pricing_breakdown": self.pricing_breakdown,
+            "plugin_annotations": self.plugin_annotations,
             "cost": self.cost,
             "status": self.status,
             "error_message": self.error_message,

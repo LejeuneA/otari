@@ -146,6 +146,13 @@ class PluginsConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether plugins are discovered and loaded at all. Off, nothing is imported "
+            "(OTARI_PLUGINS_ENABLED); the spec generator runs that way so plugin routes never enter the API document."
+        ),
+    )
     directory: str = Field(
         default=DEFAULT_PLUGINS_DIRECTORY,
         description="Where drop-in plugins live; also where upload and install write.",
@@ -159,6 +166,15 @@ class PluginsConfig(BaseModel):
         ),
     )
     marketplace: MarketplaceConfig = Field(default_factory=MarketplaceConfig)
+    observer_timeout_ms: int = Field(
+        default=250,
+        ge=1,
+        le=10_000,
+        description=(
+            "How long one plugin's traffic observer may take per call before it is skipped. "
+            "Applies to on_request and to each tool call; see docs/plugins.md."
+        ),
+    )
 
     def plugin_settings(self, name: str) -> dict[str, Any]:
         """Return the raw block a plugin's ``register`` receives, or an empty one."""

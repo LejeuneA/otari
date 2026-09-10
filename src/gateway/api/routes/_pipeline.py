@@ -123,6 +123,7 @@ from gateway.models.entities import APIKey, ModelPricing, UsageLog
 from gateway.models.guardrails import GuardrailConfig
 from gateway.models.mcp import McpServerConfig
 from gateway.models.money import to_usd
+from gateway.plugins.traffic import Api, Caller, Conversation, TrafficHooks, TrafficObservers
 from gateway.ports.model_provider_port import HostedAccessDeniedError, ModelProviderPort
 from gateway.rate_limit import RateLimitInfo, check_rate_limit
 from gateway.services.budget_service import (
@@ -847,6 +848,11 @@ class RequestContext:
         # without a shared id they would be unrelated rows in the activity log.
         # `None` for an unrouted request, which writes exactly one row.
         self.request_group_id = request_group_id
+        # Plugin traffic observers for this request, set by prepare_gateway_tools
+        # when any plugin registered one; their annotations reach the usage row.
+        self.traffic: TrafficHooks | None = None
+        # The app's state, for what only the app holds (the plugin registry).
+        self.request_app_state: Any = None
 
 
 def scope_prompt_cache_key(request_fields: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
@@ -2035,7 +2041,7 @@ async def resolve_request_context(
         policy_name=plan.policy_name if plan else None,
     )
 
-    return RequestContext(
+    ctx = RequestContext(
         config=config,
         db=db,
         log_writer=log_writer,
@@ -2054,6 +2060,9 @@ async def resolve_request_context(
         request_group_id=str(uuid.uuid4()) if plan is not None else None,
         organization_id=organization_id,
     )
+    # Absent on a request built without an app scope, as some tests do.
+    ctx.request_app_state = getattr(raw_request.scope.get("app"), "state", None)
+    return ctx
 
 
 # ---------------------------------------------------------------------------
@@ -2445,6 +2454,45 @@ async def _resolve_mcp_server_ids(
         raise adapter.error(500, MCP_SERVER_TOKEN_UNREADABLE_DETAIL, ErrorKind.API) from exc
 
 
+def _api_of(adapter: FormatAdapter[Any, Any]) -> Api:
+    """The traffic seam's name for the adapter's wire shape."""
+    name = adapter.name
+    if name not in ("chat", "messages", "responses"):
+        msg = f"adapter {name!r} has no traffic-seam shape"
+        raise ValueError(msg)
+    return name  # type: ignore[return-value]
+
+
+def _traffic_observers(ctx: RequestContext) -> TrafficObservers | None:
+    """The loaded plugins' observers, or ``None`` when no plugin registered one."""
+    registry = getattr(ctx.request_app_state, "plugins", None) if ctx.request_app_state is not None else None
+    if registry is None:
+        return None
+    observers = TrafficObservers(registry.traffic_observers(), ctx.config.plugins.observer_timeout_ms)
+    return observers if observers else None
+
+
+async def _observe_request(ctx: RequestContext, conversation: Conversation | None) -> None:
+    """Hand the request to the plugin traffic observers, if any, and keep their hooks on the context.
+
+    Runs after the input guardrails: a request they refuse is never shown to a
+    plugin. Never raises; every observer call is fenced inside the seam.
+    """
+    if conversation is None:
+        return
+    observers = _traffic_observers(ctx)
+    if observers is None:
+        return
+    caller = Caller(
+        api_key_id=ctx.api_key_id,
+        user_id=ctx.user_id,
+        workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+        organization_id=str(ctx.organization_id) if ctx.organization_id else None,
+    )
+    ctx.traffic = TrafficHooks(observers, caller, conversation)
+    await ctx.traffic.request()
+
+
 async def prepare_gateway_tools(
     *,
     adapter: FormatAdapter[Any, Any],
@@ -2457,6 +2505,7 @@ async def prepare_gateway_tools(
     mcp_server_ids: list[uuid.UUID] | None,
     max_tool_iterations: int | None,
     tools_header: str | None,
+    conversation: Conversation | None = None,
 ) -> ToolContext:
     """Guardrails, MCP server-id resolution, and gateway-tool extraction.
 
@@ -2489,6 +2538,7 @@ async def prepare_gateway_tools(
             credentials=effective.credentials,
             mandated=effective.mandated,
         )
+        await _observe_request(ctx, conversation)
 
         # Checked per source, not over the merged list: see
         # `_validate_mcp_server_urls` for why a stored server's rejection cannot
@@ -2940,6 +2990,7 @@ async def log_usage(
     attribution: RoutingAttribution | None = None,
     tool_tally: ToolUsageTally | None = None,
     workspace_id: uuid.UUID | None = None,
+    plugin_annotations: dict[str, Any] | None = None,
 ) -> Decimal | None:
     """Log API usage to the database and return the computed cost.
 
@@ -3013,6 +3064,7 @@ async def log_usage(
         attempt_position=attribution.position if attribution else None,
         attempt_count=attribution.attempt_count if attribution else None,
         request_group_id=attribution.request_group_id if attribution else None,
+        plugin_annotations=plugin_annotations or None,
     )
 
     usage_data = usage_override
@@ -3589,6 +3641,7 @@ def build_streaming_response(
     attribution: RoutingAttribution | None = None,
     tool_tally: ToolUsageTally | None = None,
     workspace_id: uuid.UUID | None = None,
+    traffic: TrafficHooks | None = None,
 ) -> StreamingResponse:
     """Wrap an already-opened upstream stream in an SSE response.
 
@@ -3643,6 +3696,7 @@ def build_streaming_response(
             attribution=attribution,
             tool_tally=tool_tally,
             workspace_id=workspace_id,
+            plugin_annotations=traffic.annotations_or_none() if traffic is not None else None,
         )
         if reservation is not None:
             await reconcile_reservation(
@@ -3715,6 +3769,7 @@ def build_streaming_response(
             attribution=attribution,
             tool_tally=tool_tally,
             workspace_id=workspace_id,
+            plugin_annotations=traffic.annotations_or_none() if traffic is not None else None,
         )
         # The estimate covers the unreported tokens; log_usage adds any tool cost on
         # top of it, so reconcile against the row's total rather than the estimate.
@@ -3760,6 +3815,7 @@ def build_streaming_response(
             attribution=attribution,
             tool_tally=tool_tally,
             workspace_id=workspace_id,
+            plugin_annotations=traffic.annotations_or_none() if traffic is not None else None,
         )
         if reservation is not None:
             # A stream that died after running searches still owes for them, and a
@@ -3820,7 +3876,7 @@ def build_streaming_response(
 
     return StreamingResponse(
         streaming_generator(
-            stream=stream,
+            stream=traffic.observe_stream(_api_of(adapter), stream) if traffic is not None else stream,
             format_chunk=adapter.format_chunk,
             extract_usage=adapter.extract_stream_usage,
             fmt=adapter.stream_format,
@@ -4026,6 +4082,7 @@ async def run_single_attempt_stream(
         display_model=display_model,
         attribution=stream_attribution,
         tool_tally=tool_ctx.tally,
+        traffic=ctx.traffic,
     )
 
 
@@ -4660,6 +4717,8 @@ async def run_standalone_non_stream(
         if ctx.rate_limit_info:
             for key, value in rate_limit_headers(ctx.rate_limit_info).items():
                 response.headers[key] = value
+        if ctx.traffic is not None:
+            await ctx.traffic.result(_api_of(adapter), result)
         if ctx.db is not None:
             usage_data = adapter.extract_usage(result)
             actual_cost: Decimal | None = None
@@ -4681,6 +4740,7 @@ async def run_standalone_non_stream(
                     attribution=attribution,
                     tool_tally=tool_ctx.tally,
                     workspace_id=ctx.workspace_id,
+                    plugin_annotations=ctx.traffic.annotations_or_none() if ctx.traffic else None,
                 )
             if ctx.reservation is not None:
                 await reconcile_reservation(

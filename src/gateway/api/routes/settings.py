@@ -187,6 +187,10 @@ _CONFIG_VIEW: tuple[tuple[str, tuple[str, ...]], ...] = (
 # was weighed and rejected, and moving one up into ``_CONFIG_VIEW`` needs no
 # more justification than somebody wanting to read it.
 _DELIBERATELY_OMITTED: tuple[str, ...] = (
+    # Plugins have a page of their own: the Marketplace lists what is
+    # installed and loaded, with the directory and whether installs are on,
+    # which is the whole of this block minus each plugin's private settings.
+    "plugins",
     # Credentials. This view carries no secret, for the reason the mail group
     # above already gives: whether a credential works is answered by using it,
     # not by echoing it back to whoever opened the page.

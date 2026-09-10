@@ -11237,6 +11237,13 @@ export interface components {
             latency_ms: number | null;
             /** Model */
             model: string;
+            /**
+             * Plugin Annotations
+             * @description What plugin traffic observers annotated on this request, keyed by plugin name.
+             */
+            plugin_annotations?: {
+                [key: string]: unknown;
+            } | null;
             /** Policy Name */
             policy_name?: string | null;
             /** Pricing Breakdown */

@@ -178,6 +178,10 @@ def test_the_revision_round_trips(sqlite_at_head: tuple[Config, Engine]) -> None
     assert Decimal(str(cost)) == Decimal("0.000450")
 
     command.upgrade(config, _PROVENANCE_REVISION)
+    assert set(_EXPECTED_TYPES) <= set(_columns(engine))
+    # Back to head before reading through the ORM, whose mapping carries every
+    # column a later revision added to this table.
+    command.upgrade(config, "head")
 
     columns = _columns(engine)
     assert set(_EXPECTED_TYPES) <= set(columns)

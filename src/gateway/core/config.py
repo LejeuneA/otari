@@ -2503,6 +2503,9 @@ def _apply_plugins_env_overrides(config: dict[str, Any]) -> None:
     allow_install = os.getenv(f"{OTARI_ENV_PREFIX}PLUGINS_ALLOW_INSTALL")
     if allow_install:
         plugins["allow_install"] = parse_bool_env(allow_install)
+    enabled = os.getenv(f"{OTARI_ENV_PREFIX}PLUGINS_ENABLED")
+    if enabled:
+        plugins["enabled"] = parse_bool_env(enabled)
     if plugins:
         config["plugins"] = plugins
 
