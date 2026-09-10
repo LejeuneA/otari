@@ -19,6 +19,7 @@ service_account.json
 gateway.db
 otari-gateway.db
 otari.db
+otari-plugins/
 otari-dev.db
 smoke.db
 otari-smoke.db
