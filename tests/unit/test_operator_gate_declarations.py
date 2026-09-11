@@ -118,6 +118,7 @@ _UNGATED_ROUTERS: dict[str, str] = {
     "invitations.router": "the invitation token is the credential, and the invitee has no account yet",
     "bootstrap.router": "unauthenticated on purpose: how a browser learns which mode it reached",
     "health.router": "unauthenticated liveness and readiness",
+    "plugins.pages_router": "every signed-in session, verified per route; operator pages are withheld from a member",
     "web_search_backend.router": "its own X-Gateway-Token, checked in the handler",
     "hosted_mode.router": "mode stub: a 404 naming why the prefix is absent on this deployment",
     "hybrid_mode.router": "mode stub, as above",

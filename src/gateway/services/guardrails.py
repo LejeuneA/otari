@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from gateway.models.guardrails import GuardrailConfig
+from gateway.plugins.guardrails import GuardrailBackend
 from gateway.services.url_safety import UnsafeURLError, validate_mcp_url
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,30 @@ async def _validate_one(
     )
 
 
+async def _check_local(backend: GuardrailBackend, cfg: GuardrailConfig, input_text: str) -> GuardrailResult:
+    """Run a plugin's backend under the same failure contract as the service call."""
+    try:
+        outcome = await backend.check(input_text, direction="input", kwargs=dict(cfg.validate_kwargs))
+    except Exception as exc:  # noqa: BLE001 a plugin's failure is the guardrail being unevaluable
+        raise GuardrailsNotReachableError(
+            f"guardrail profile {cfg.profile!r} (plugin backend) failed: {exc}",
+            public_detail=_unevaluated_detail(cfg.profile),
+        ) from exc
+    valid = getattr(outcome, "valid", None)
+    if valid is not None and not isinstance(valid, bool):
+        raise GuardrailsNotReachableError(
+            f"guardrail profile {cfg.profile!r} (plugin backend) returned a non-boolean 'valid': {valid!r}",
+            public_detail=_unevaluated_detail(cfg.profile),
+        )
+    return GuardrailResult(
+        profile=cfg.profile,
+        mode=cfg.mode,
+        valid=valid,
+        explanation=getattr(outcome, "explanation", None),
+        score=getattr(outcome, "score", None),
+    )
+
+
 async def run_input_guardrails(
     guardrails: list[GuardrailConfig],
     input_text: str,
@@ -175,8 +200,14 @@ async def run_input_guardrails(
     default_url: str | None,
     credentials: Mapping[str, str] | None = None,
     mandated: Collection[str] | None = None,
+    local: Mapping[str, GuardrailBackend] | None = None,
 ) -> GuardrailVerdict:
     """Run every input-direction guardrail and return the aggregate verdict.
+
+    ``local`` maps a profile name to a backend a plugin registered in this
+    process (``gateway.plugins.guardrails``). A profile found there is checked
+    in-process, its ``url`` ignored, under the same ``mode`` and
+    ``on_unavailable`` handling as a service profile.
 
     ``mandated`` names the profiles that came from a layer above the caller (an
     organization entry or a routing policy) rather than from the request body.
@@ -262,12 +293,13 @@ async def run_input_guardrails(
     # Either way the unsafe endpoint is never actually called.
     credentials = credentials or {}
     mandated = frozenset(mandated or ())
+    local = local or {}
     unsafe: dict[str, UnsafeURLError] = {}
     if guardrails:
         # Paired with its URL rather than filtered in place, so what reaches
         # `validate_mcp_url` is a `str` and not a `str | None` narrowed by
         # inspection.
-        checked = [(g.profile, g.url) for g in guardrails if g.url is not None]
+        checked = [(g.profile, g.url) for g in guardrails if g.url is not None and g.profile not in local]
         outcomes = await asyncio.gather(
             *(
                 validate_mcp_url(url, has_authorization_token=bool(credentials.get(profile)))
@@ -291,6 +323,9 @@ async def run_input_guardrails(
         for cfg in input_guardrails:
             base_url = (cfg.url or default_url or "").rstrip("/")
             try:
+                if (backend := local.get(cfg.profile)) is not None:
+                    results.append(await _check_local(backend, cfg, input_text))
+                    continue
                 if (unsafe_url := unsafe.get(cfg.profile)) is not None:
                     raise GuardrailsNotReachableError(
                         f"guardrail profile {cfg.profile!r} names an endpoint that failed the "

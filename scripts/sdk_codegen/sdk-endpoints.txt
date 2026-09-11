@@ -389,3 +389,6 @@ GET /api/v1/plugins/marketplace/describe                                      # 
 POST /api/v1/plugins/upload                                                   # operator dashboard
 POST /api/v1/plugins/install                                                  # operator dashboard
 DELETE /api/v1/plugins/{name}                                                 # operator dashboard
+GET /api/v1/plugins/pages                                                     # dashboard rail
+GET /api/v1/plugins/{name}/settings                                           # operator dashboard
+PUT /api/v1/plugins/{name}/settings                                           # operator dashboard

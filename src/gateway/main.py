@@ -27,6 +27,7 @@ from gateway.dashboard import (
 from gateway.inflight import InFlightMiddleware, InFlightRegistry
 from gateway.log_config import logger
 from gateway.plugins import load_plugins
+from gateway.plugins.events import current_bus
 from gateway.plugins.marketplace import Marketplace
 from gateway.plugins.migrations import run_plugin_migrations
 from gateway.rate_limit import RateLimiter
@@ -47,6 +48,7 @@ from gateway.services.model_discovery_service import (
     run_discovery_refresher,
 )
 from gateway.services.oauth_service import callback_landing_target
+from gateway.services.plugin_settings_service import apply_plugin_settings_from_db
 from gateway.services.policy_store import (
     load_policies_at_startup,
     reset_policy_cache,
@@ -202,6 +204,28 @@ def _is_plugin_asset(path: str) -> bool:
     return _is_plugin_page(path) and "/assets/" in path
 
 
+class PluginEventsMiddleware:
+    """Binds the plugins' event bus to each request's context, so any code on the request path can emit.
+
+    Pure ASGI for the reason ``InFlightMiddleware`` is: the binding has to hold
+    while a streaming body is still being produced, which outlives the handler.
+    """
+
+    def __init__(self, app: Any, bus: Any) -> None:
+        self.app = app
+        self.bus = bus
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        token = current_bus.set(self.bus)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            current_bus.reset(token)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all responses.
 
@@ -353,6 +377,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
         # From the app, not a closure: app.state.config is what get_config hands
         # every request, so startup reads the same object.
         config: GatewayConfig = app.state.config
+        plugins_for_hooks = getattr(app.state, "plugins", None)
         configure_default_pricing(config.default_pricing)
         # Bound method, not a snapshot: it reads config.providers on every call, so
         # a provider added or re-typed in the dashboard is priced under the
@@ -380,6 +405,8 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                 # reference a core table. Each plugin stamps its own version table.
                 run_plugin_migrations(config.database_url, plugins)
             async with create_session() as session:
+                if plugins is not None:
+                    await apply_plugin_settings_from_db(session, plugins)
                 # Persisted dashboard overrides win over config/env; apply them
                 # before pricing init so default-pricing behavior is consistent.
                 await apply_overrides_from_db(config, session)
@@ -496,6 +523,9 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             await log_writer.start()
             log_writer_started = True
             app.state.log_writer = log_writer
+            if plugins_for_hooks is not None:
+                # After migrations and stored settings, so a hook sees the schema and its config.
+                await plugins_for_hooks.startup()
             yield
         finally:
             refreshers = [
@@ -531,6 +561,9 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             # POST /api/v1/search dispatches on one pooled client for the process, so
             # shutdown owns closing it. A no-op when no search was ever served.
             await close_search_client()
+            if plugins_for_hooks is not None:
+                # Before the engine goes, so a hook may still write.
+                await plugins_for_hooks.shutdown()
             # After the log writer, whose final flush is the last thing to need
             # a session. Hybrid mode never opened an engine, so this is a no-op there.
             await dispose_db()
@@ -854,13 +887,26 @@ def create_app(config: GatewayConfig) -> FastAPI:
     # unlike a bootstrap, a plugin is optional by construction.
     app.state.plugins = load_plugins(config, app.state.container)
     app.state.marketplace = Marketplace(config.plugins.marketplace)
+    if app.state.plugins.events:
+        # Only when a plugin subscribed: with no handlers there is nothing to bind.
+        app.add_middleware(PluginEventsMiddleware, bus=app.state.plugins.events)
     for plugin in app.state.plugins.loaded():
-        if plugin.ui is not None:
-            # Static like the dashboard itself; the page authenticates its own
-            # API calls with the session cookie, being same-origin.
+        # Static like the dashboard itself; a page authenticates its own API
+        # calls with the session cookie, being same-origin. Each page's
+        # directory mounts under its id, and the first page also at the bare
+        # ``/ui/`` so a bundle built against that base keeps working.
+        for page in plugin.pages:
+            app.mount(
+                f"/plugins/{plugin.name}/ui/{page.id}",
+                StaticFiles(directory=page.directory, html=True),
+                name=f"plugin-ui-{plugin.name}-{page.id}",
+            )
+        if plugin.pages:
+            # Last, since a mount matches by prefix and this one would otherwise
+            # shadow every page mount above it.
             app.mount(
                 f"/plugins/{plugin.name}/ui",
-                StaticFiles(directory=plugin.ui.directory, html=True),
+                StaticFiles(directory=plugin.pages[0].directory, html=True),
                 name=f"plugin-ui-{plugin.name}",
             )
 

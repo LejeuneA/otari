@@ -112,8 +112,11 @@ def test_manifest_parses_and_derives_the_version_table() -> None:
 
     assert manifest.name == "probe"
     assert manifest.package == "probe_plugin"
-    assert manifest.ui is not None
-    assert manifest.ui.label == "Probe"
+    assert manifest.ui is None  # the short form is normalized into one page
+    assert [page.label for page in manifest.pages] == ["Probe"]
+    assert manifest.pages[0].section == "extend"
+    assert manifest.plugin_api == 1
+    assert manifest.modes == ["standalone", "hosted", "hybrid"]
     assert manifest.version_table == "alembic_version_probe"
 
 

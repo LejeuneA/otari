@@ -1792,7 +1792,7 @@
         {
           "name": "Health Check",
           "request": {
-            "description": "General health check endpoint.\n\nReturns basic health status. For infrastructure monitoring,\nuse /health/readiness or /health/liveness instead.",
+            "description": "General health check endpoint.\n\nReturns basic health status. For infrastructure monitoring,\nuse /health/readiness or /health/liveness instead. ``plugins`` lists each\nloaded plugin that registered a health check, with what it reported.",
             "header": [],
             "method": "GET",
             "url": {
@@ -5671,6 +5671,26 @@
           }
         },
         {
+          "name": "List Plugin Pages",
+          "request": {
+            "description": "The dashboard pages loaded plugins ship, for the rail: every member page, and the operator pages for an operator.\n\nAuthenticated the way the operator routes are, but not gated on the answer:\na member sees the pages a plugin declared for members and nothing else.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "plugins",
+                "pages"
+              ],
+              "raw": "{{baseUrl}}/api/v1/plugins/pages"
+            }
+          }
+        },
+        {
           "name": "Upload Plugin",
           "request": {
             "description": "Install a plugin from an uploaded zip or tar.gz. It loads on the next start.\n\n``force`` installs an archive whose version is older than the installed one.",
@@ -5715,6 +5735,76 @@
                 ":name"
               ],
               "raw": "{{baseUrl}}/api/v1/plugins/:name",
+              "variable": [
+                {
+                  "description": "path parameter",
+                  "key": "name",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Plugin Settings",
+          "request": {
+            "description": "A plugin's typed settings and their live values.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "plugins",
+                ":name",
+                "settings"
+              ],
+              "raw": "{{baseUrl}}/api/v1/plugins/:name/settings",
+              "variable": [
+                {
+                  "description": "path parameter",
+                  "key": "name",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Plugin Settings",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"values\": {}\n}"
+            },
+            "description": "Change a plugin's settings from the dashboard.\n\nValidated against the manifest, persisted, then applied to the running\nplugin, which is told through its ``on_settings_change`` listeners. A\n``null`` clears a key back to what config.yml or the manifest default says.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "PUT",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "plugins",
+                ":name",
+                "settings"
+              ],
+              "raw": "{{baseUrl}}/api/v1/plugins/:name/settings",
               "variable": [
                 {
                   "description": "path parameter",

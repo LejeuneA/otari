@@ -99,7 +99,8 @@ providers:
 #     api_base: "http://searxng:8080"
 
 # Plugins. A plugin is a Python package that adds routes, CLI commands, database
-# tables, and a dashboard page; see docs/plugins.md. Drop-in plugins live in the
+# tables, dashboard pages, guardrails, tools, router backends, event handlers,
+# and traffic observers; see docs/plugins.md. Drop-in plugins live in the
 # directory below (also where the dashboard's Marketplace installs to). A plugin
 # runs inside the gateway with everything the gateway can reach, so installing
 # through the API stays off until an operator turns it on here.
@@ -109,5 +110,7 @@ providers:
 #   allow_install: false
 #   disabled: []
 #   observer_timeout_ms: 250    # budget per plugin traffic-observer call
+#   event_timeout_ms: 5000      # budget per plugin event handler (off the request path)
+#   hook_timeout_ms: 30000      # budget per plugin startup, shutdown, or health hook
 #   agent-gates:
 #     # a plugin's own settings, under its name

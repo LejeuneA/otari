@@ -1,22 +1,36 @@
-"""Installed plugins and the marketplace.
+"""Installed plugins, their settings, their pages, and the marketplace.
 
 Operator-only, and gated a second time for anything that writes code to disk:
 ``plugins.allow_install`` is off by default because a plugin runs inside the
 gateway with everything the gateway can reach, and turning that on is a
 decision an operator makes in config, not one a dashboard session makes for
-them.
+them. The one member-visible route is ``GET /plugins/pages``, on a router of
+its own: the rail needs it for every signed-in session, and it answers only
+with the pages the caller is allowed to see.
 """
 
 import asyncio
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api.deps import get_config, require_deployment_operator
+from gateway.api.deps import get_config, get_db, get_session_identity, require_deployment_operator, verify_master_key
 from gateway.core.config import GatewayConfig
 from gateway.log_config import logger
-from gateway.models.plugins import PluginManifest, PluginManifestError
+from gateway.models.plugins import (
+    PLUGIN_API_VERSION,
+    PageAudience,
+    PageIcon,
+    PageParent,
+    PageSection,
+    PluginManifest,
+    PluginManifestError,
+    RuntimeMode,
+    SettingType,
+)
+from gateway.models.tenancy import User as TenancyUser
 from gateway.plugins import LoadedPlugin, PluginRegistry
 from gateway.plugins.archive import (
     MAX_ARCHIVE_BYTES,
@@ -27,10 +41,19 @@ from gateway.plugins.archive import (
     remove_installed,
 )
 from gateway.plugins.describe import describe_github_plugin
+from gateway.plugins.events import emit as emit_plugin_event
 from gateway.plugins.marketplace import Marketplace, MarketplaceEntry
+from gateway.services.plugin_settings_service import (
+    PluginSettingsError,
+    effective_values,
+    save_plugin_settings,
+    validate_plugin_settings,
+)
+from gateway.services.tenancy.deployment_user_service import DeploymentUserService
 from gateway.version import __version__
 
 router = APIRouter(prefix="/plugins", tags=["plugins"], dependencies=[Depends(require_deployment_operator)])
+pages_router = APIRouter(prefix="/plugins", tags=["plugins"])
 
 INSTALL_OFF_DETAIL = (
     "Plugin installation is off for this deployment. Set plugins.allow_install: true in config.yml "
@@ -38,9 +61,34 @@ INSTALL_OFF_DETAIL = (
 )
 
 
+class PluginPageInfo(BaseModel):
+    """One dashboard page a plugin ships, and where its row goes."""
+
+    id: str
+    label: str
+    url: str = Field(description="Where the page is served; the dashboard frames it.")
+    path: str = Field(description="The dashboard path that frames it.")
+    icon: PageIcon
+    section: PageSection
+    parent: PageParent | None = None
+    order: int
+    audience: PageAudience
+
+
 class PluginUiInfo(BaseModel):
     label: str
-    url: str = Field(description="Where the plugin's page is served; the dashboard frames it.")
+    url: str = Field(description="Where the plugin's first page is served; the dashboard frames it.")
+
+
+class PluginSettingField(BaseModel):
+    """One typed setting from the manifest, as the dashboard renders it."""
+
+    key: str
+    type: SettingType
+    default: Any = None
+    description: str = ""
+    secret: bool = False
+    editable: bool = True
 
 
 class InstallRecord(BaseModel):
@@ -57,6 +105,9 @@ class PluginManifestSummary(BaseModel):
     name: str
     version: str
     description: str
+    plugin_api: int = Field(description="The plugin API version it is written against.")
+    supported_here: bool = Field(description="Whether this gateway provides that plugin API version.")
+    modes: list[RuntimeMode] = Field(description="The runtime modes it loads in.")
     homepage: str | None = None
     getting_started: str | None = Field(default=None, description="A page that walks a new user through setup.")
     contributes: list[str] = Field(
@@ -67,6 +118,8 @@ class PluginManifestSummary(BaseModel):
         default=None,
         description="Why this gateway would refuse to load the plugin, when it would: known before install.",
     )
+    settings: list[PluginSettingField] = Field(default_factory=list)
+    pages: list[str] = Field(default_factory=list, description="Labels of the dashboard pages it ships.")
 
 
 class InstalledPlugin(BaseModel):
@@ -82,15 +135,25 @@ class InstalledPlugin(BaseModel):
     installed: InstallRecord | None = Field(
         default=None, description="Provenance, for a plugin installed from an archive."
     )
+    plugin_api: int
+    modes: list[RuntimeMode]
     homepage: str | None = None
     getting_started: str | None = None
     contributes: list[str] = Field(description="What the manifest declares; what loaded is enforced to match.")
     config_keys: list[str] = Field(default_factory=list)
+    settings: list[PluginSettingField] = Field(default_factory=list)
     ui: PluginUiInfo | None = None
+    pages: list[PluginPageInfo] = Field(default_factory=list)
     api_prefix: str = Field(description="Where the plugin's routes mount, below the API root.")
     routes: int = Field(description="How many routes the plugin registered.")
     cli_commands: list[str] = Field(description="Top-level `otari` command groups the plugin added.")
     migrations: bool = Field(description="Whether the plugin owns database migrations.")
+    guardrails: list[str] = Field(default_factory=list, description="Guardrail profiles it offers.")
+    tools: list[str] = Field(default_factory=list, description="Tool backends it offers.")
+    router_backends: list[str] = Field(default_factory=list, description="Router backends it offers.")
+    events: list[str] = Field(default_factory=list, description="Events it subscribed to.")
+    traffic: bool = Field(default=False, description="Whether it watches inference traffic.")
+    health: str | None = Field(default=None, description="What its last health check reported.")
 
 
 class PluginProblem(BaseModel):
@@ -105,6 +168,23 @@ class PluginsResponse(BaseModel):
     directory: str = Field(description="The plugins directory: where uploads and installs land.")
     install_allowed: bool
     restart_required: bool = Field(description="Whether a plugin was installed or removed since startup.")
+    plugin_api: int = Field(description="The plugin API version this gateway provides.")
+
+
+class PluginPagesResponse(BaseModel):
+    pages: list[PluginPageInfo]
+
+
+class PluginSettingsResponse(BaseModel):
+    plugin: str
+    fields: list[PluginSettingField]
+    values: dict[str, Any] = Field(description="Each declared setting's live value; a set secret reads as masked.")
+
+
+class UpdatePluginSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    values: dict[str, Any] = Field(description="Settings to change; null clears one back to config or default.")
 
 
 class MarketplacePlugin(BaseModel):
@@ -160,25 +240,65 @@ def _marketplace(request: Request) -> Marketplace:
     return marketplace
 
 
+def _setting_fields(manifest: PluginManifest) -> list[PluginSettingField]:
+    return [
+        PluginSettingField(
+            key=key,
+            type=spec.type,
+            default=None if spec.secret else spec.default,
+            description=spec.description,
+            secret=spec.secret,
+            editable=spec.editable,
+        )
+        for key, spec in manifest.settings.items()
+    ]
+
+
+def _page_info(plugin: LoadedPlugin, page: Any) -> PluginPageInfo:
+    manifest = page.manifest
+    return PluginPageInfo(
+        id=page.id,
+        label=page.label,
+        url=plugin.page_url(page),
+        path=f"/plugins/{plugin.name}" if page is plugin.pages[0] else f"/plugins/{plugin.name}/{page.id}",
+        icon=manifest.icon,
+        section=manifest.section,
+        parent=manifest.parent,
+        order=manifest.order,
+        audience=manifest.audience,
+    )
+
+
 def _describe(plugin: LoadedPlugin) -> InstalledPlugin:
+    manifest = plugin.manifest
     return InstalledPlugin(
         name=plugin.name,
-        version=plugin.manifest.version,
-        description=plugin.manifest.description,
+        version=manifest.version,
+        description=manifest.description,
         source=plugin.source,
         status=plugin.status,
         error=plugin.error,
         pending=plugin.pending,
         installed=_install_record(plugin),
-        homepage=plugin.manifest.homepage,
-        getting_started=plugin.manifest.getting_started,
-        contributes=list(plugin.manifest.contributes),
-        config_keys=list(plugin.manifest.config_keys),
+        plugin_api=manifest.plugin_api,
+        modes=list(manifest.modes),
+        homepage=manifest.homepage,
+        getting_started=manifest.getting_started,
+        contributes=list(manifest.contributes),
+        config_keys=list(manifest.config_keys),
+        settings=_setting_fields(manifest),
         ui=PluginUiInfo(label=plugin.ui.label, url=plugin.ui_url or "") if plugin.ui else None,
+        pages=[_page_info(plugin, page) for page in plugin.pages],
         api_prefix=plugin.api_prefix,
         routes=sum(len(item.router.routes) for item in plugin.routers),
         cli_commands=[group.name for group in plugin.cli_groups if group.name],
         migrations=bool(plugin.migrations),
+        guardrails=[f"{plugin.name}:{name}" for name in plugin.guardrails],
+        tools=[f"{plugin.name}:{name}" for name in plugin.tools],
+        router_backends=[f"{plugin.name}:{name}" for name in plugin.router_backends],
+        events=sorted({name for name, _ in plugin.subscriptions}),
+        traffic=bool(plugin.observers),
+        health=plugin.health.get("status"),
     )
 
 
@@ -214,6 +334,91 @@ async def list_plugins(request: Request, config: Annotated[GatewayConfig, Depend
         directory=str(registry.directory),
         install_allowed=config.plugins.allow_install,
         restart_required=_restart_required(registry),
+        plugin_api=PLUGIN_API_VERSION,
+    )
+
+
+@pages_router.get("/pages", response_model=PluginPagesResponse)
+async def list_plugin_pages(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    session_identity: Annotated[TenancyUser | None, Depends(get_session_identity)],
+    _master_key: Annotated[str | None, Depends(verify_master_key)],
+) -> PluginPagesResponse:
+    """The dashboard pages loaded plugins ship, for the rail: every member page, and the operator pages for an operator.
+
+    Authenticated the way the operator routes are, but not gated on the answer:
+    a member sees the pages a plugin declared for members and nothing else.
+    """
+    registry = getattr(request.app.state, "plugins", None)
+    if registry is None:
+        return PluginPagesResponse(pages=[])
+    operator = session_identity is None or await DeploymentUserService(db).has_administration_access(session_identity)
+    pages = [
+        _page_info(plugin, page) for plugin, page in registry.pages() if operator or page.manifest.audience == "member"
+    ]
+    # Stable, so pages with one order keep their declared sequence.
+    pages.sort(key=lambda page: page.order)
+    return PluginPagesResponse(pages=pages)
+
+
+def _loaded_plugin_or_404(registry: PluginRegistry, name: str) -> LoadedPlugin:
+    plugin = registry.get(name)
+    if plugin is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No plugin named {name!r}.")
+    return plugin
+
+
+@router.get("/{name}/settings", response_model=PluginSettingsResponse)
+async def get_plugin_settings(request: Request, name: str) -> PluginSettingsResponse:
+    """A plugin's typed settings and their live values."""
+    plugin = _loaded_plugin_or_404(_registry(request), name)
+    return PluginSettingsResponse(
+        plugin=plugin.name,
+        fields=_setting_fields(plugin.manifest),
+        values=effective_values(plugin.config, plugin.manifest),
+    )
+
+
+@router.put("/{name}/settings", response_model=PluginSettingsResponse)
+async def update_plugin_settings(
+    request: Request,
+    name: str,
+    body: UpdatePluginSettingsRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> PluginSettingsResponse:
+    """Change a plugin's settings from the dashboard.
+
+    Validated against the manifest, persisted, then applied to the running
+    plugin, which is told through its ``on_settings_change`` listeners. A
+    ``null`` clears a key back to what config.yml or the manifest default says.
+    """
+    registry = _registry(request)
+    plugin = _loaded_plugin_or_404(registry, name)
+    try:
+        values = validate_plugin_settings(plugin.manifest, body.values)
+    except PluginSettingsError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    await save_plugin_settings(db, plugin.name, values)
+    # Applied after the write, like the gateway's own runtime overrides: a
+    # cleared key falls back to config.yml's value, else the manifest default.
+    raw_config = request.app.state.config.plugins.plugin_settings(plugin.name)
+    applied: dict[str, Any] = {}
+    for key, value in values.items():
+        if value is not None:
+            applied[key] = value
+        else:
+            applied[key] = raw_config.get(key, plugin.manifest.settings[key].default)
+    if plugin.status == "loaded":
+        await registry.apply_settings(plugin.name, applied)
+    else:
+        plugin.config.update(applied)
+    emit_plugin_event("plugin.settings_changed", plugin=plugin.name, keys=sorted(values))
+    logger.info("Plugin %s: settings %s changed from the dashboard", plugin.name, ", ".join(sorted(values)))
+    return PluginSettingsResponse(
+        plugin=plugin.name,
+        fields=_setting_fields(plugin.manifest),
+        values=effective_values(plugin.config, plugin.manifest),
     )
 
 
@@ -242,11 +447,16 @@ def _summary(manifest: PluginManifest) -> PluginManifestSummary:
         name=manifest.name,
         version=manifest.version,
         description=manifest.description,
+        plugin_api=manifest.plugin_api,
+        supported_here=manifest.plugin_api <= PLUGIN_API_VERSION,
+        modes=list(manifest.modes),
         homepage=manifest.homepage,
         getting_started=manifest.getting_started,
         contributes=list(manifest.contributes),
         config_keys=list(manifest.config_keys),
         needs_newer_gateway=manifest.needs_newer_gateway(__version__),
+        settings=_setting_fields(manifest),
+        pages=[page.label for page in manifest.pages],
     )
 
 

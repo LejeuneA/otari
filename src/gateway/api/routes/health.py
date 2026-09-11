@@ -1,13 +1,14 @@
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api.deps import get_config, get_db_if_needed
 from gateway.core.config import DEFAULT_PLATFORM_HEALTH_PATH, GatewayConfig
 from gateway.log_config import logger
+from gateway.plugins import PluginRegistry
 from gateway.version import __version__
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -49,17 +50,29 @@ async def _check_platform_reachability(config: GatewayConfig) -> bool:
     return True
 
 
+async def _plugin_health(request: Request) -> tuple[dict[str, str], bool]:
+    """Every loaded plugin's health checks, and whether a critical one failed."""
+    registry: PluginRegistry | None = getattr(request.app.state, "plugins", None)
+    if registry is None:
+        return {}, False
+    return await registry.check_health()
+
+
 @router.get("")
-async def health_check(config: GatewayConfig = Depends(get_config)) -> dict[str, str]:
+async def health_check(request: Request, config: GatewayConfig = Depends(get_config)) -> dict[str, Any]:
     """General health check endpoint.
 
     Returns basic health status. For infrastructure monitoring,
-    use /health/readiness or /health/liveness instead.
+    use /health/readiness or /health/liveness instead. ``plugins`` lists each
+    loaded plugin that registered a health check, with what it reported.
     """
-    payload: dict[str, str] = {"status": "healthy"}
+    payload: dict[str, Any] = {"status": "healthy"}
     if config.is_hybrid_mode:
         payload["mode"] = "hybrid"
         payload["platform_reachable"] = "yes" if await _check_platform_reachability(config) else "no"
+    plugins, _ = await _plugin_health(request)
+    if plugins:
+        payload["plugins"] = plugins
     return payload
 
 
@@ -79,6 +92,7 @@ async def health_liveness() -> str:
 
 @router.get("/readiness")
 async def health_readiness(
+    request: Request,
     config: GatewayConfig = Depends(get_config),
     db: Annotated[AsyncSession | None, Depends(get_db_if_needed)] = None,
 ) -> dict[str, Any]:
@@ -110,12 +124,15 @@ async def health_readiness(
                     "version": __version__,
                 },
             )
-        return {
-            "status": "healthy",
-            "mode": "hybrid",
-            "platform": "connected",
-            "version": __version__,
-        }
+        return await _with_plugins(
+            request,
+            {
+                "status": "healthy",
+                "mode": "hybrid",
+                "platform": "connected",
+                "version": __version__,
+            },
+        )
 
     if db is None:
         raise HTTPException(
@@ -136,8 +153,24 @@ async def health_readiness(
                 "version": __version__,
             },
         ) from e
-    return {
-        "status": "healthy",
-        "database": db_status,
-        "version": __version__,
-    }
+    return await _with_plugins(
+        request,
+        {
+            "status": "healthy",
+            "database": db_status,
+            "version": __version__,
+        },
+    )
+
+
+async def _with_plugins(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    """Add the plugins' health to a ready payload, or refuse readiness when a critical check fails."""
+    plugins, critical_failure = await _plugin_health(request)
+    if plugins:
+        payload["plugins"] = plugins
+    if critical_failure:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={**payload, "status": "unhealthy"},
+        )
+    return payload

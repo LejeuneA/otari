@@ -173,8 +173,11 @@ async def test_an_observer_annotates_the_usage_row_of_a_completion(watched_clien
         )
 
     assert response.status_code == 200, response.text
-    # Phase 1 records, never alters: the tool call reaches the client untouched.
-    assert response.json()["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "Bash"
+    # The denial applies: the call is gone and its message stands in its place.
+    message = response.json()["choices"][0]["message"]
+    assert message["tool_calls"] is None
+    assert "no force-push" in message["content"]
+    assert response.json()["choices"][0]["finish_reason"] == "stop"
     row = _latest_usage(watched_client)
     assert row["plugin_annotations"] == {
         "watcher": {
@@ -183,7 +186,7 @@ async def test_an_observer_annotates_the_usage_row_of_a_completion(watched_clien
             "prior_tool_calls": 1,
             "workspace": True,
             "tools": ["Bash"],
-            "would_deny": [{"tool_call_id": "call_1", "message": "no force-push"}],
+            "denied": [{"tool_call_id": "call_1", "name": "Bash", "message": "no force-push"}],
         }
     }
 
@@ -255,7 +258,7 @@ async def test_an_observer_sees_a_streamed_tool_call_once_it_is_whole(watched_cl
     assert annotations["tools"] == ["Bash"]
     assert annotations["prior_tool_calls"] == 0
     assert annotations["session"].startswith("anon-")
-    assert "would_deny" not in annotations
+    assert "denied" not in annotations
 
 
 @pytest.mark.asyncio

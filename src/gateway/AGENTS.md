@@ -33,13 +33,22 @@ container and before the routers; `api/main.py` mounts their routers under
 `/plugins/<name>`; `cli.main` attaches their command groups. `traffic.py` is
 the request-path seam: each route builds a provider-neutral `Conversation`
 and hands it to `prepare_gateway_tools`, which asks every observer after the
-input guardrails; the non-streaming settle site and the streaming builder ask
-again per tool call; `log_usage` writes what they annotated to
-`plugin_annotations`. Every observer call is fenced by a timeout and a
-try/except, and decisions are recorded, never applied, in this phase. A plugin that
-fails to load is listed as failed, never a refused boot. The contract a plugin
-writes against is `docs/plugins.md`; keep `PluginContext` stable, since plugin
-repositories depend on it.
+input guardrails and applies a `block` there; the injected system text rides
+on `ToolContext` into the three dispatch choke points; the non-streaming
+settle site and the stream gates ask again per tool call and replace a denied
+one; `on_response` runs once the answer is whole; `log_usage` writes what they
+annotated to `plugin_annotations`. Every observer call is fenced by a timeout
+and a try/except. `events.py` is the bus (`emit` reads a context variable the
+`PluginEventsMiddleware` binds per request; handlers run as tasks), and
+`guardrails.py` the backend protocol `run_input_guardrails` consults before
+the service for a profile a plugin owns; plugin tools ride `ToolContext.plugin_tool`
+through the same ladders as the sandbox, and plugin router backends sit in
+`services/routing/backends.py`'s registry. Lifecycle hooks run from the
+lifespan after migrations and stored settings (`plugin_settings_service.py`,
+rows in `runtime_settings` under `plugin:`). A plugin that fails to load is
+listed as failed, never a refused boot. The contract a plugin writes against
+is `docs/plugins.md` and `plugins/api.py` (versioned as `plugin_api`); keep
+both stable, since plugin repositories depend on them.
 
 ## Request lifecycle
 

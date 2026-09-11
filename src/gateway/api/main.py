@@ -214,6 +214,7 @@ def _register_core_routers(api: APIRouter, config: GatewayConfig) -> None:
 
     api.include_router(admin.router)
     api.include_router(plugins.router)
+    api.include_router(plugins.pages_router)
     api.include_router(auth_session.router)
     api.include_router(auth_password.router)
     api.include_router(auth_signup.router)

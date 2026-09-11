@@ -123,7 +123,16 @@ from gateway.models.entities import APIKey, ModelPricing, UsageLog
 from gateway.models.guardrails import GuardrailConfig
 from gateway.models.mcp import McpServerConfig
 from gateway.models.money import to_usd
-from gateway.plugins.traffic import Api, Caller, Conversation, TrafficHooks, TrafficObservers
+from gateway.plugins.events import emit as emit_plugin_event
+from gateway.plugins.guardrails import GuardrailBackend
+from gateway.plugins.traffic import (
+    Api,
+    Caller,
+    Conversation,
+    TrafficHooks,
+    TrafficObservers,
+    inject_system_text,
+)
 from gateway.ports.model_provider_port import HostedAccessDeniedError, ModelProviderPort
 from gateway.rate_limit import RateLimitInfo, check_rate_limit
 from gateway.services.budget_service import (
@@ -2101,9 +2110,15 @@ class ToolContext:
         max_tool_iterations: int,
         tools_header: str | None,
         config: GatewayConfig,
+        plugin_tool: tuple[str, Callable[[], Any]] | None = None,
+        injected_system: str = "",
     ) -> None:
         self.config = config
         self.mcp_server_configs = mcp_server_configs
+        # A plugin's tool backend the request opted into, as (name, factory), and
+        # the system text plugin traffic observers asked to prepend.
+        self.plugin_tool = plugin_tool
+        self.injected_system = injected_system
         self.use_sandbox = use_sandbox
         self.sandbox_tool_entry = sandbox_tool_entry
         self.sandbox_url = sandbox_url
@@ -2218,7 +2233,72 @@ class ToolContext:
 
     @property
     def use_tool_loop(self) -> bool:
-        return bool(self.mcp_server_configs) or self.use_sandbox or self.use_web_search
+        return bool(self.mcp_server_configs) or self.use_sandbox or self.use_web_search or self.plugin_tool is not None
+
+    def build_plugin_tool_backend(self) -> "PluginToolSession":
+        """The one place a plugin's tool backend is constructed for this request."""
+        assert self.plugin_tool is not None  # guaranteed by the plugin tool opt-in
+        name, factory = self.plugin_tool
+        return PluginToolSession(name, factory())
+
+
+class PluginToolSession:
+    """A plugin's tool backend for one request, with the context-manager edge the loops expect.
+
+    A plugin's factory may return a plain object or an async context manager;
+    either way the loops open and close it the way they do the sandbox.
+    """
+
+    def __init__(self, name: str, backend: Any) -> None:
+        self.name = name
+        self._backend = backend
+        self._opened: Any = None
+
+    async def __aenter__(self) -> "PluginToolSession":
+        enter = getattr(self._backend, "__aenter__", None)
+        if callable(enter):
+            opened = await enter()
+            self._opened = opened if opened is not None else self._backend
+        else:
+            self._opened = self._backend
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        exit_ = getattr(self._backend, "__aexit__", None)
+        if callable(exit_):
+            await exit_(*exc)
+
+    @property
+    def openai_tools(self) -> list[dict[str, Any]]:
+        return list(self._opened.openai_tools)
+
+    def owns_tool(self, name: str) -> bool:
+        return bool(self._opened.owns_tool(name))
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        return str(await self._opened.call_tool(name, arguments))
+
+    def purpose_hints(self) -> list[tuple[str, str]]:
+        return list(self._opened.purpose_hints())
+
+
+PLUGIN_TOOL_TYPE = "plugin"
+
+
+def _extract_plugin_tool(
+    tools: list[dict[str, Any]] | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None]:
+    """Split a ``{"type": "plugin", "name": "<plugin>:<tool>"}`` entry from the caller's tools."""
+    if not tools:
+        return None, tools
+    entry = next((tool for tool in tools if isinstance(tool, dict) and tool.get("type") == PLUGIN_TOOL_TYPE), None)
+    if entry is None:
+        return None, tools
+    return entry, [tool for tool in tools if tool is not entry]
+
+
+PLUGIN_TOOL_UNKNOWN_DETAIL = "No loaded plugin offers the tool named in the plugin tool entry."
+PLUGIN_TOOL_CONFLICT_DETAIL = "A plugin tool cannot be combined with MCP servers, code execution, or web search."
 
 
 async def _validate_mcp_server_urls(
@@ -2472,6 +2552,24 @@ def _traffic_observers(ctx: RequestContext) -> TrafficObservers | None:
     return observers if observers else None
 
 
+def _plugin_guardrails(ctx: RequestContext) -> dict[str, GuardrailBackend] | None:
+    """The guardrail backends loaded plugins offer, or ``None`` when there are none."""
+    registry = getattr(ctx.request_app_state, "plugins", None) if ctx.request_app_state is not None else None
+    if registry is None:
+        return None
+    backends = registry.guardrail_backends()
+    return backends or None
+
+
+def _with_injected_system(
+    adapter: FormatAdapter[Any, Any], tool_ctx: ToolContext, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """The call kwargs with the system text plugin observers asked for, if any."""
+    if not tool_ctx.injected_system:
+        return kwargs
+    return inject_system_text(_api_of(adapter), kwargs, tool_ctx.injected_system)
+
+
 async def _observe_request(ctx: RequestContext, conversation: Conversation | None) -> None:
     """Hand the request to the plugin traffic observers, if any, and keep their hooks on the context.
 
@@ -2540,8 +2638,15 @@ async def prepare_gateway_tools(
             config=ctx.config,
             credentials=effective.credentials,
             mandated=effective.mandated,
+            local=_plugin_guardrails(ctx),
         )
         await _observe_request(ctx, conversation)
+        if ctx.traffic is not None and ctx.traffic.blocked is not None:
+            # A plugin refused the request; the provider is never called and
+            # the reservation is released with every other admission failure.
+            plugin_name, message = ctx.traffic.blocked
+            logger.info("Plugin %s blocked a request: %s", plugin_name, message)
+            raise adapter.error(403, message, ErrorKind.PERMISSION)
 
         # Checked per source, not over the merged list: see
         # `_validate_mcp_server_urls` for why a stored server's rejection cannot
@@ -2718,8 +2823,19 @@ async def prepare_gateway_tools(
         # served into a 400. So with no backend configured, or the toggle off, a
         # provider-named keyword passes through exactly as it always has.
         intercept_web_search = _web_search_intercept_enabled(ctx.config) and ctx.config.web_search_configured()
+        plugin_tool_entry, tools_after_plugin = _extract_plugin_tool(tools_after_sandbox)
+        plugin_tool: tuple[str, Callable[[], Any]] | None = None
+        if plugin_tool_entry is not None:
+            registry = getattr(ctx.request_app_state, "plugins", None) if ctx.request_app_state is not None else None
+            offered = registry.tool_backends() if registry is not None else {}
+            tool_name = str(plugin_tool_entry.get("name") or "")
+            if tool_name not in offered:
+                raise adapter.error(400, PLUGIN_TOOL_UNKNOWN_DETAIL, ErrorKind.INVALID_REQUEST)
+            if mcp_servers or use_sandbox:
+                raise adapter.error(400, PLUGIN_TOOL_CONFLICT_DETAIL, ErrorKind.INVALID_REQUEST)
+            plugin_tool = (tool_name, offered[tool_name])
         web_search_tool_entry, remaining_user_tools = _extract_web_search_tool(
-            tools_after_sandbox,
+            tools_after_plugin,
             intercept=intercept_web_search,
         )
         try:
@@ -2738,6 +2854,8 @@ async def prepare_gateway_tools(
             if use_sandbox or mcp_servers:
                 raise adapter.error(400, WEB_SEARCH_CONFLICT_DETAIL, ErrorKind.INVALID_REQUEST)
             use_web_search = True
+            if plugin_tool is not None:
+                raise adapter.error(400, PLUGIN_TOOL_CONFLICT_DETAIL, ErrorKind.INVALID_REQUEST)
 
             # Both modes carry a per-workspace web-search configuration (whether
             # it is enabled at all, plus the result ceiling, the domain filters,
@@ -2879,6 +2997,8 @@ async def prepare_gateway_tools(
         web_search_url=web_search_url,
         web_search_auth_token=web_search_auth_token,
         remaining_user_tools=remaining_user_tools,
+        plugin_tool=plugin_tool,
+        injected_system=ctx.traffic.injected_system if ctx.traffic is not None else "",
         max_tool_iterations=min(
             max_tool_iterations or DEFAULT_MAX_TOOL_ITERATIONS,
             MAX_TOOL_ITERATIONS_CAP,
@@ -3133,6 +3253,21 @@ async def log_usage(
         record_cost(str(provider or ""), model, float(usage_log.cost))
 
     await log_writer.put(usage_log)
+    emit_plugin_event(
+        "usage.logged",
+        api_key_id=api_key_id,
+        user_id=user_id,
+        workspace_id=str(workspace_id) if workspace_id else None,
+        model=model,
+        provider=provider,
+        endpoint=endpoint,
+        status=usage_log.status,
+        cost=float(usage_log.cost) if usage_log.cost is not None else None,
+        prompt_tokens=usage_log.prompt_tokens,
+        completion_tokens=usage_log.completion_tokens,
+        latency_ms=latency_ms,
+        plugin_annotations=plugin_annotations or None,
+    )
     return usage_log.cost
 
 
@@ -3438,6 +3573,7 @@ async def dispatch_non_stream(
     backend (MCP pool / sandbox / web_search) opened for the duration of the
     loop.
     """
+    call_kwargs = _with_injected_system(adapter, tool_ctx, call_kwargs)
     if not tool_ctx.use_tool_loop:
         return await adapter.call_provider(call_kwargs)
 
@@ -3445,6 +3581,11 @@ async def dispatch_non_stream(
         async with MCPClientPool(tool_ctx.mcp_server_configs, tally=tool_ctx.tally) as pool:
             kwargs = adapter.inject_hints(call_kwargs, pool.purpose_hints(), header=tool_ctx.tools_header)
             return await adapter.run_tool_loop(kwargs, pool, tool_ctx.max_tool_iterations, on_first_response)
+
+    if tool_ctx.plugin_tool is not None:
+        async with tool_ctx.build_plugin_tool_backend() as plugin_backend:
+            kwargs = adapter.inject_hints(call_kwargs, plugin_backend.purpose_hints(), header=tool_ctx.tools_header)
+            return await adapter.run_tool_loop(kwargs, plugin_backend, tool_ctx.max_tool_iterations, on_first_response)
 
     if tool_ctx.use_sandbox:
         async with tool_ctx.build_sandbox_backend() as backend:
@@ -3522,13 +3663,18 @@ async def open_stream(
     the response has already committed to 200 OK. The MCP pool is entered
     lazily inside the returned iterator.
     """
-    kwargs = adapter.prepare_stream_kwargs(call_kwargs)
+    kwargs = adapter.prepare_stream_kwargs(_with_injected_system(adapter, tool_ctx, call_kwargs))
 
     if not tool_ctx.use_tool_loop:
         return await adapter.open_provider_stream(kwargs)
 
     if tool_ctx.mcp_server_configs:
         return _lazy_mcp_stream(adapter, kwargs, tool_ctx.mcp_server_configs, tool_ctx)
+
+    if tool_ctx.plugin_tool is not None:
+        plugin_backend = tool_ctx.build_plugin_tool_backend()
+        await plugin_backend.__aenter__()
+        return _eager_backend_stream(adapter, kwargs, plugin_backend, tool_ctx)
 
     if tool_ctx.use_sandbox:
         sandbox_backend = tool_ctx.build_sandbox_backend()
@@ -4194,6 +4340,8 @@ async def run_streaming_with_fallback(
             )
         elif tool_ctx.use_sandbox:
             pool_for_loop = await backend_stack.enter_async_context(tool_ctx.build_sandbox_backend())
+        elif tool_ctx.plugin_tool is not None:
+            pool_for_loop = await backend_stack.enter_async_context(tool_ctx.build_plugin_tool_backend())
         elif tool_ctx.use_web_search:
             assert tool_ctx.web_search_tool_entry is not None  # guaranteed by the web_search opt-in
             pool_for_loop = await backend_stack.enter_async_context(
@@ -4214,7 +4362,7 @@ async def run_streaming_with_fallback(
 
     async def _build_for_attempt(attempt: ResolvedAttempt) -> AsyncIterator[ChunkT]:
         completion_kwargs = adapter.prepare_stream_kwargs(
-            adapter.attempt_kwargs(attempt, base_request_fields),
+            _with_injected_system(adapter, tool_ctx, adapter.attempt_kwargs(attempt, base_request_fields)),
             require_usage=True,
         )
         if pool_for_loop is None:
@@ -4728,8 +4876,9 @@ async def run_standalone_non_stream(
         if ctx.rate_limit_info:
             for key, value in rate_limit_headers(ctx.rate_limit_info).items():
                 response.headers[key] = value
+        response_block: str | None = None
         if ctx.traffic is not None:
-            await ctx.traffic.result(_api_of(adapter), result)
+            result, response_block = await ctx.traffic.result(_api_of(adapter), result)
         if ctx.db is not None:
             usage_data = adapter.extract_usage(result)
             actual_cost: Decimal | None = None
@@ -4757,6 +4906,10 @@ async def run_standalone_non_stream(
                 await reconcile_reservation(
                     ctx.db, ctx.reservation, actual_cost or Decimal(0), actual_tokens=_settled_tokens(usage_data)
                 )
+        if response_block is not None:
+            # After the usage row and the reconcile: the provider was called and
+            # paid for; only the answer is withheld from the caller.
+            raise adapter.error(403, response_block, ErrorKind.PERMISSION)
         if display_model is not None:
             relabel_model(result, display_model)
         return result

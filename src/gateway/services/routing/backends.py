@@ -160,9 +160,24 @@ def clear_router_backend_cache() -> None:
     _warned_missing.clear()
 
 
+# Router backends plugins registered, keyed ``<plugin>:<name>``; set by
+# ``gateway.plugins.load_plugins`` for the process, like ``_KNN_CACHE`` is.
+_PLUGIN_BACKENDS: dict[str, RouterBackend] = {}
+
+
+def set_plugin_router_backends(backends: dict[str, RouterBackend]) -> None:
+    """Replace the router backends plugins offer; a policy names one as ``backend: <plugin>:<name>``."""
+    _PLUGIN_BACKENDS.clear()
+    _PLUGIN_BACKENDS.update({name.lower(): backend for name, backend in backends.items()})
+
+
+def plugin_router_backends() -> tuple[str, ...]:
+    return tuple(sorted(_PLUGIN_BACKENDS))
+
+
 def known_backends() -> tuple[str, ...]:
     """Backend names this build resolves, for an error message that lists them."""
-    return (KNN_BACKEND, NOOP_BACKEND, WEIGHTED_BACKEND)
+    return (KNN_BACKEND, NOOP_BACKEND, WEIGHTED_BACKEND, *plugin_router_backends())
 
 
 def backend_is_weighted(name: str | None) -> bool:
@@ -250,4 +265,4 @@ def get_router_backend(config: GatewayConfig, name: str) -> RouterBackend | None
             cached = KnnRoutingMemory(config)
             _KNN_CACHE[signature] = cached
         return cached
-    return None
+    return _PLUGIN_BACKENDS.get(backend)

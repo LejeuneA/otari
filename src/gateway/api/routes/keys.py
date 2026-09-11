@@ -14,6 +14,7 @@ from gateway.auth.models import generate_api_key, hash_key, key_prefix
 from gateway.core.config import GatewayConfig
 from gateway.models.entities import APIKey, User
 from gateway.models.tenancy import Workspace
+from gateway.plugins.events import emit as emit_plugin_event
 from gateway.repositories.users_repository import get_or_create_default_user
 from gateway.services.model_access import is_allowlist_subset, validate_allowed_models
 from gateway.services.tenancy import OrganizationService
@@ -334,6 +335,7 @@ async def create_key(
     await db.refresh(db_key)
 
     key_info = KeyInfo.from_model(db_key)
+    emit_plugin_event("key.created", key_id=db_key.id, user_id=db_key.user_id, workspace_id=str(db_key.workspace_id))
     return CreateKeyResponse(
         **key_info.model_dump(exclude={"last_used_at"}),
         key=api_key,
@@ -494,6 +496,7 @@ async def delete_key(
     Requires master key authentication.
     """
     key = await _load_key_in_organization(db, key_id, organization_id)
+    owner, workspace = key.user_id, str(key.workspace_id)
 
     await db.delete(key)
     try:
@@ -504,3 +507,4 @@ async def delete_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database error",
         ) from None
+    emit_plugin_event("key.deleted", key_id=key_id, user_id=owner, workspace_id=workspace)

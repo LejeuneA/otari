@@ -19,6 +19,7 @@ from gateway.log_config import logger
 from gateway.metrics import record_budget_exceeded
 from gateway.models.entities import MAX_COUNT_LIMIT, Budget, BudgetResetLog, ModelPricing, User
 from gateway.models.money import to_usd
+from gateway.plugins.events import emit as emit_plugin_event
 from gateway.repositories.users_repository import get_active_user
 from gateway.services import budget_reservation_ledger as ledger
 from gateway.services.budget_periods import budget_window
@@ -622,6 +623,7 @@ async def reserve_budget(
                 requests=held_requests,
                 new_request=new_request,
             )
+            emit_plugin_event("budget.exceeded", user_id=user_id, subject=refused.subject, axis=axis)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"{refused.subject} has exceeded {axis} limit",
@@ -1035,6 +1037,7 @@ async def increase_reservation(
                 requests=0,
                 new_request=False,
             )
+            emit_plugin_event("budget.exceeded", user_id=handle.user_id, subject=refused.subject, axis=axis)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"{refused.subject} has exceeded {axis} limit",

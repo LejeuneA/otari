@@ -15,6 +15,7 @@ from gateway.core.env import otari_env
 from gateway.log_config import logger
 from gateway.models.guardrails import GuardrailConfig
 from gateway.models.tenancy import Workspace
+from gateway.plugins.guardrails import GuardrailBackend
 from gateway.services.guardrails import GuardrailsNotReachableError, run_input_guardrails
 from gateway.services.routing.decide import RoutingSignal
 from gateway.services.url_safety import UnsafeURLError
@@ -269,8 +270,12 @@ async def apply_input_guardrails(
     config: GatewayConfig | None = None,
     credentials: Mapping[str, str] | None = None,
     mandated: Collection[str] | None = None,
+    local: Mapping[str, GuardrailBackend] | None = None,
 ) -> None:
     """Enforce the input guardrails for a request before the provider call.
+
+    ``local`` names the guardrail backends plugins loaded into this process,
+    checked in place of the service for the profiles they own.
 
     ``guardrails`` is the effective list: the caller's own, merged with any the
     caller's organization mandates and any a routing policy mandates (see
@@ -326,6 +331,9 @@ async def apply_input_guardrails(
             default_url=default_url,
             credentials=credentials,
             mandated=mandated,
+            # Passed only when a plugin offers a backend, so the common case
+            # keeps the call shape a fake of this function mirrors.
+            **({"local": local} if local else {}),
         )
     except UnsafeURLError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

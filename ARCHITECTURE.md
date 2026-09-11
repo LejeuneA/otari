@@ -173,9 +173,15 @@ runtime form of the additive half of that seam: a Python package the gateway
 discovers at startup (an `otari.plugins` entry point, or a directory under
 `plugins.directory`), reads a manifest from, and hands a `PluginContext` to.
 Through it a plugin adds routes under `/api/v1/plugins/<name>`, `otari` command
-groups, an Alembic chain on its own version table, and a static page the
-dashboard frames. It swaps nothing: a plugin may resolve a port through
-`ctx.container` but does not rebind one, which stays the overlay's job.
+groups, an Alembic chain on its own version table, static pages the dashboard
+frames and places in its rail, startup and shutdown hooks with a health check,
+event handlers, and a traffic observer that can block, steer, or deny. It can
+also offer named backends into registries the core already dispatches on: a
+guardrail profile, a tool the gateway's tool loop runs, a router backend a
+policy names. It swaps nothing: a plugin may resolve a port through
+`ctx.container` but does not rebind one, which stays the overlay's job. What a
+plugin imports is `gateway.plugins.api`, versioned as `plugin_api` in the
+manifest; the rest of `gateway` is not a contract.
 
 Where an overlay that cannot load is a refused boot, a plugin that cannot load
 is listed as failed and the gateway starts without it, because a plugin is

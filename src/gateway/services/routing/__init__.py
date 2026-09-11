@@ -28,6 +28,8 @@ from gateway.services.routing.backends import (
     clear_router_backend_cache,
     get_router_backend,
     known_backends,
+    plugin_router_backends,
+    set_plugin_router_backends,
 )
 from gateway.services.routing.compiler import (
     CompiledPlan,
@@ -58,6 +60,8 @@ __all__ = [
     "compile_policy",
     "get_router_backend",
     "known_backends",
+    "plugin_router_backends",
+    "set_plugin_router_backends",
     "needs_budget_state",
     "selection_consults_router",
 ]

@@ -83,17 +83,23 @@ plugins:
     verified_index_url: https://raw.githubusercontent.com/mozilla-ai/otari-plugins/main/index.json
     github_topic: otari-plugin
     github_token: null           # raises the GitHub search rate limit
-  observer_timeout_ms: 250       # budget per traffic-observer call; see Watching traffic
+  observer_timeout_ms: 250       # budget per traffic-observer call
+  event_timeout_ms: 5000         # budget per event handler, off the request path
+  hook_timeout_ms: 30000         # budget per startup, shutdown, or health hook
   agent-gates:                   # a plugin's own settings, under its name
-    ...
+    judge_timeout_seconds: 120
 ```
 
-Everything under `plugins:` that is not one of the six settings above is a
-plugin's own block, handed to that plugin as it is. The plugin documents what
-it accepts.
+Everything under `plugins:` that is not one of the settings above is a
+plugin's own block. The keys a plugin types in its manifest are checked
+against it and rendered as a form on the plugin's card in the Marketplace,
+where an operator can change them without a restart; a value set there wins
+over `config.yml`, the way the gateway's own runtime overrides do. Untyped keys
+are handed to the plugin as they are, and the plugin documents them.
 
-Plugins load in every mode. Their migrations run only where the gateway has a
-database of its own, which excludes hybrid mode.
+A plugin loads in the modes its manifest names and is listed as disabled in
+the others. Migrations run only where the gateway has a database of its own,
+which excludes hybrid mode.
 
 ## Writing a plugin
 
@@ -124,24 +130,47 @@ name = "agent-gates"              # letters, digits, hyphens, up to 47; the URL 
 version = "0.1.0"
 description = "Checks a coding agent's turn against a repository's stated rules."
 package = "otari_agent_gates"     # the importable package; the manifest sits inside it
+plugin_api = 1                    # the version of gateway.plugins.api it is written against
+modes = ["standalone"]            # standalone, hosted, hybrid; loaded in these only
 homepage = "https://github.com/mozilla-ai/otari-agent-gates"
 getting_started = "https://github.com/mozilla-ai/otari-agent-gates#quick-start"
 min_otari_version = "0.30.0"      # optional; an older gateway refuses to load the plugin
 contributes = ["routes", "cli", "migrations", "ui", "traffic"]
-config_keys = ["judge_timeout_seconds", "traffic"]
+config_keys = ["traffic"]         # keys the plugin reads from its config block beyond the typed ones
 
-[plugin.ui]                       # optional
-path = "static"                   # relative to the package directory
-label = "Agent gates"             # the sidebar row
+[plugin.settings.judge_timeout_seconds]   # typed keys of the plugins.agent-gates block
+type = "int"                      # str, int, float, bool, list, object
+default = 120
+description = "Cap on one judge call."
+# secret = true                   # masked in the dashboard, never returned
+# editable = false                # config.yml only
+
+[[plugin.pages]]                  # dashboard pages; [plugin.ui] with path and label is the one-page short form
+id = "runs"
+label = "Agent gates"
+path = "static"                   # directory relative to the package
+section = "extend"                # observe, build, access, extend, or none (no sidebar row)
+# parent = "tools"                # nest under a rail item that has children: tools or routing
+icon = "shield"
+order = 100
+audience = "operator"             # or member: every signed-in session sees the row
+# entry = "#/runs"                # appended to the page URL, so pages can share one bundle
 ```
 
 `contributes` is the plugin's own account of what it adds, in a closed
-vocabulary: `routes`, `cli`, `migrations`, `ui`, `traffic`. It is read before
-any code runs, so the Marketplace can say what an install will do, and it is
-enforced when the plugin loads: a plugin that registers something it did not
-declare is refused with the reason. `config_keys` names what the plugin reads
-from its own block of `config.yml`, and `getting_started` is the page the
-dashboard links a new user to once the plugin is loaded.
+vocabulary: `routes`, `cli`, `migrations`, `ui`, `traffic`, `lifecycle`,
+`events`, `guardrails`, `tools`, `routing`. It is read before any code runs,
+so the Marketplace can say what an install will do, and it is enforced when
+the plugin loads: a plugin that registers something it did not declare is
+refused with the reason. It is a label, not a boundary: a loaded plugin is
+Python in the gateway's process, and the dashboard says so before an install.
+
+`plugin_api` names the contract the plugin is written against. The gateway
+provides one version (`gateway.plugins.api.PLUGIN_API_VERSION`) and refuses a
+plugin that wants a newer one, so a plugin fails at install time with a clear
+reason rather than at runtime with an import error. `modes` keeps a plugin out
+of a runtime it was not written for: one that resolves provider credentials
+locally has nothing to do on a hybrid gateway, and is listed as disabled there.
 
 The manifest is read leniently, so a plugin written for a newer gateway still
 describes itself on an older one: a key the gateway does not know is ignored,
@@ -156,24 +185,42 @@ probe for it at load.
 repository's manifest without downloading the plugin, which is what the
 install dialog shows.
 
+### What a plugin may import
+
+Import from `gateway.plugins.api` and nothing else under `gateway`. That module
+re-exports the whole plugin contract: `PluginContext`, the FastAPI dependencies
+a plugin's routes take (`get_db`, `get_config`, `require_deployment_operator`,
+`verify_api_key_or_master_key`, and the rest), the traffic events and
+decisions, the backend protocols, and `Event`. Everything else in `gateway` is
+internal and moves without notice; what `gateway.plugins.api` exports is kept
+stable within one `plugin_api` version.
+
 ```python
 # src/otari_agent_gates/__init__.py
 from pathlib import Path
 
-from gateway.plugins import PluginContext
+from gateway.plugins.api import PluginContext
 
 from .cli import policy
 from .routes import router
 
 
 def register(ctx: PluginContext) -> None:
-    settings = ctx.config                       # the plugins.agent-gates block, raw
+    settings = ctx.config                       # the plugins.agent-gates block over the manifest defaults
     ctx.add_router(router, auth="api_key")      # served under /api/v1/plugins/agent-gates, to API keys
     ctx.add_cli(policy)                         # `otari policy ...`
     ctx.add_migrations(Path(__file__).parent / "migrations")
 ```
 
-What each contribution means:
+`ctx.config` is the plugin's block of `config.yml` laid over the defaults its
+manifest declares, type-checked against the manifest (a wrong type fails the
+load). It is the live dict: when an operator changes a setting from the
+dashboard the same dict is updated in place and every `ctx.on_settings_change`
+listener runs, so a plugin that reads `ctx.config` at use time needs nothing
+more. Stored dashboard values win over `config.yml` the way the gateway's own
+runtime overrides do.
+
+### What a plugin can add
 
 - **Routes** mount under `/api/v1/plugins/<name>`, plus the router's own
   prefix. The mount applies the credential `auth` names to every route on the
@@ -204,24 +251,65 @@ What each contribution means:
   otherwise propose dropping the plugin's tables. Migrations run after Otari's
   own, on startup when `auto_migrate` is on and from `otari migrate`, so a
   plugin table may reference a core one.
-- **A page** is a directory of static files with an `index.html`, served at
-  `/plugins/<name>/ui/`. The dashboard shows it in a frame on the same origin,
-  so the page calls the plugin's routes with the session cookie and needs no
-  token handling of its own. Build it with whatever you like; hash-based
-  client-side routing avoids needing server rewrites under the static mount.
+- **Pages** are directories of static files with an `index.html`. The first
+  page is served at `/plugins/<name>/ui/` and every page at
+  `/plugins/<name>/ui/<id>/`; the dashboard frames each at
+  `/plugins/<name>` and `/plugins/<name>/<id>`, on the same origin, so the
+  page calls the plugin's routes with the session cookie and needs no token
+  handling of its own. The manifest says where the row goes (`section`,
+  `parent`, `order`, `icon`) and who sees it (`audience`); `section = "none"`
+  ships a page with no row, reachable from the plugin's card. Build it with
+  whatever you like; hash-based client-side routing avoids needing server
+  rewrites under the static mount.
 
   To look like the rest of the dashboard, link the dashboard's own stylesheet
   rather than bundling a theme: `<link rel="stylesheet" href="/dashboard.css">`
   serves the current build's CSS, which carries the semantic tokens
   (`--color-surface`, `--color-muted`, and so on), the HeroUI component styles,
-  and the self-hosted fonts. Use HeroUI components and the same token names,
-  and mirror the theme the dashboard set on its own root element (a
-  `data-theme` attribute and a `dark` class), which a same-origin frame can
-  read from `window.parent.document.documentElement` and watch with a
-  `MutationObserver`. The dashboard frames the page under its own title, so
-  the page should not repeat a title or a sidebar of its own.
+  and the self-hosted fonts. The dashboard talks to the frame with
+  `postMessage`: it sends `{type: "otari:theme", theme: "light" | "dark"}` on
+  load and on every change, and the page may send `{type: "otari:navigate",
+  to: "/keys"}` to move the dashboard, or `{type: "otari:toast", title,
+  description?, variant?: "success" | "danger"}` to show a notice. The
+  dashboard frames the page under its own title, so the page should not repeat
+  a title or a sidebar of its own.
 - **A traffic observer** watches inference requests as they pass through the
-  gateway. See [Watching traffic](#watching-traffic) below.
+  gateway and can block, steer, or deny. See [Watching traffic](#watching-traffic).
+- **Lifecycle hooks.** `ctx.on_startup(fn)` runs after Otari's and the
+  plugin's migrations and after stored settings are applied, with an event
+  loop, which is where a client pool or a background task belongs;
+  `ctx.on_shutdown(fn)` runs before the database engine is disposed. A
+  startup hook that raises marks the plugin failed (its routes stay mounted
+  until the next start). `ctx.add_health_check(fn, critical=False)` reports
+  into `/health` under the plugin's name; a `critical` check that fails takes
+  `/health/readiness` to 503. Every hook may be sync or async and is cut off
+  at `plugins.hook_timeout_ms`.
+- **Events.** `ctx.subscribe(name, handler)` runs `handler(event)` for a
+  gateway event: `usage.logged` (one usage row: model, provider, status, cost,
+  tokens, annotations), `budget.exceeded` (user, subject, axis),
+  `key.created`, `key.deleted`, and `plugin.settings_changed`; `"*"` gets them
+  all. Handlers run as tasks off the request path, each cut off at
+  `plugins.event_timeout_ms` and fenced by a `try`, so a notifier that is slow
+  or broken never delays or fails a response. `event.payload` carries ids and
+  numbers, never request or response content.
+- **Guardrail backends.** `ctx.add_guardrail(name, backend)` offers a profile
+  named `<plugin>:<name>` that a request, an organization entry, or a routing
+  policy names like any service profile, and that gets block or monitor,
+  fail-open or fail-closed, the mandate merge, and the result header for
+  free. `backend.check(text, direction=, kwargs=)` is async and returns a
+  `GuardrailOutcome(valid, explanation, score)`; a raise is the guardrail
+  being unevaluable, handled by the entry's `mode` and `on_unavailable`.
+- **Tools.** `ctx.add_tool(name, factory)` offers a tool the gateway runs for
+  the model. `factory()` is called per request and returns an object with the
+  `ToolBackend` members (`openai_tools`, `owns_tool`, `call_tool`,
+  `purpose_hints`), optionally an async context manager. A request opts in with
+  a tool entry `{"type": "plugin", "name": "<plugin>:<name>"}`, and the
+  gateway's tool loop drives it the way it drives web search and code
+  execution, which a request cannot combine with in one call.
+- **Router backends.** `ctx.add_router_backend(name, backend)` offers a
+  strategy a routing policy selects with `backend: <plugin>:<name>`.
+  `backend.rank(ctx)` returns a `RoutingDecision`, or declines to let the
+  policy's default serve.
 - **`ctx.container`** is the composition root, for a plugin that needs a port.
   It is `None` when plugins are loaded for the command line alone.
 
@@ -241,24 +329,29 @@ archive nests everything under.
 An agent that talks to its model through Otari puts its whole conversation on
 the wire: every tool call it made and every result it got back arrive in the
 next request's messages, and the model's next tool call leaves in the response.
-A plugin can watch that without installing anything on the client:
+A plugin can watch that, and act on it, without installing anything on the
+client:
 
 ```python
-from gateway.plugins.traffic import RequestDecision, ToolCallDecision
+from gateway.plugins.api import RequestDecision, ResponseDecision, ToolCallDecision
 
 
 class Watcher:
     def on_request(self, event):
         # event.caller: api_key_id, user_id, workspace_id, organization_id
-        # event.conversation: api, model, system, turns, session_key
+        # event.conversation: api, model, system, turns, session_key, latest_user_text
         last = event.conversation.last_turn
         ran = [call.arguments.get("command") for call in last.tool_calls] if last else []
-        return RequestDecision(annotations={"ran": ran})
+        return RequestDecision(inject_system="Never force-push.", annotations={"ran": ran})
 
     async def on_tool_call(self, event):
         if event.tool_call.name == "Bash" and "--force" in event.tool_call.arguments.get("command", ""):
             return ToolCallDecision(deny="Never force-push.", annotations={"fired": ["no-force-push"]})
         return None
+
+    def on_response(self, event):
+        # event.text: the answer's text; event.tool_calls: the calls that survived; event.streamed
+        return ResponseDecision(annotations={"length": len(event.text)})
 
 
 def register(ctx):
@@ -280,20 +373,28 @@ stream keeps flowing while a call's fragments are collected, then waits while
 the observers answer before the completing chunk is sent on. Only calls the
 client will run are offered; a tool the gateway runs itself (`otari_*` tools,
 MCP servers) is settled inside the tool loop and never reaches the response.
-Either method may be sync or async, and either may be omitted.
+`on_response` runs once the answer is complete. Every method may be sync or
+async, and any may be omitted.
 
-What comes back is recorded, not applied. `annotations` from every observer are
+Decisions apply. A request `block` answers 403 with the message and never
+calls the provider. `inject_system` is prepended to the system text of the
+provider call, in whichever shape the API carries it. A tool call `deny`
+removes the call from the response and puts `[Otari refused this tool call:
+<message>]` where it was; in a stream the call's fragments are held back until
+it is whole and judged, while the text around it keeps flowing. A response
+`block` withholds a non-streamed answer with a 403 after the usage row is
+written, since the provider was called; for a streamed answer, whose bytes are
+gone, it is recorded as `would_block`. `annotations` from every observer are
 merged under the plugin's name into the usage row's `plugin_annotations`
-column and read back through the usage API; a `deny` is written there as
-`would_deny`, a key a plugin cannot set itself. Annotations must be JSON and
-stay under 16 KiB per plugin per request; a batch that is not JSON, or that
-would take the plugin's annotations over the cap, is logged and left off the
-row while what was recorded before it stays. A request that fails, or a
-stream the client abandons after tool work, carries them on its error row
-too. Hybrid mode asks both hooks the same way but writes no local usage row,
-so nothing is recorded there.
-Enforcement, replacing a tool call or injecting a system message, is a later
-phase and will keep this contract.
+column, alongside what the seam itself records (`denied`, `blocked`,
+`injected_system`: keys a plugin cannot set itself), and read back through
+the usage API and the Activity page. Annotations must be JSON and stay under
+16 KiB per plugin per request; a batch that is not JSON, or that would take
+the plugin's annotations over the cap, is logged and left off the row while
+what was recorded before it stays. A request that fails, or a stream the
+client abandons after tool work, carries them on its error row too. Hybrid
+mode asks every hook the same way but writes no local usage row, so nothing
+is recorded there.
 
 Observers are fenced. One that raises is logged and skipped, one that runs
 past `plugins.observer_timeout_ms` (default 250) is abandoned and skipped, and
