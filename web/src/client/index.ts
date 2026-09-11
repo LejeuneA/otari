@@ -55,7 +55,13 @@ export type SessionType = DeploymentBootstrap["session_type"]
  * type.
  */
 export type GatewayHealth =
-  operations["health-health_check"]["responses"][200]["content"]["application/json"]
+  operations["health-health_check"]["responses"][200]["content"]["application/json"] & {
+    status?: string
+    mode?: string
+    platform_reachable?: string
+    /** Each loaded plugin that registered a health check, with what it reported. */
+    plugins?: Record<string, string>
+  }
 
 // ---------------------------------------------------------------------------
 // Dashboard sign-in credentials
@@ -411,6 +417,15 @@ export type InstalledPlugin = Schemas["InstalledPlugin"]
 export type PluginStatus = InstalledPlugin["status"]
 export type PluginProblem = Schemas["PluginProblem"]
 export type PluginUiInfo = Schemas["PluginUiInfo"]
+/** One dashboard page a plugin ships, and where its rail row goes. */
+export type PluginPageInfo = Schemas["PluginPageInfo"]
+export type PluginPagesResponse = Schemas["PluginPagesResponse"]
+/** One typed setting from a plugin's manifest, as the settings form renders it. */
+export type PluginSettingField = Schemas["PluginSettingField"]
+export type PluginSettingType = PluginSettingField["type"]
+export type PluginSettingsResponse = Schemas["PluginSettingsResponse"]
+export type UpdatePluginSettingsRequest = Schemas["UpdatePluginSettingsRequest"]
+export type PluginRuntimeMode = InstalledPlugin["modes"][number]
 export type MarketplaceResponse = Schemas["MarketplaceResponse"]
 export type MarketplacePlugin = Schemas["MarketplacePlugin"]
 export type PluginManifestSummary = Schemas["PluginManifestSummary"]

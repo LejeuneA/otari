@@ -16,6 +16,7 @@ import {
   marketplacePlugin,
   marketplaceResponse,
   pluginManifest,
+  pluginSettingField,
   pluginsResponse,
 } from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
@@ -179,7 +180,7 @@ describe("MarketplacePage", () => {
     expect(within(installed).getByText("Plugins directory")).toBeVisible()
     // What the manifest declares, one chip each, and where to start.
     const [firstRow] = within(installed).getAllByRole("listitem")
-    for (const chip of ["API routes", "CLI", "Tables", "Page"]) {
+    for (const chip of ["API routes", "CLI", "Tables", "Pages"]) {
       expect(within(firstRow).getByText(chip)).toBeVisible()
     }
     expect(within(firstRow).queryByText("Watches traffic")).toBeNull()
@@ -427,6 +428,47 @@ describe("MarketplacePage", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull()
   })
 
+  it("holds the install of a plugin that needs a newer plugin API", async () => {
+    mockApi({
+      marketplace: marketplaceResponse({
+        verified: [
+          {
+            ...VERIFIED,
+            manifest: pluginManifest({
+              name: "agent-gates",
+              plugin_api: 3,
+              supported_here: false,
+              modes: ["standalone"],
+              pages: ["Agent gates"],
+              settings: [pluginSettingField()],
+            }),
+          },
+        ],
+      }),
+    })
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      await screen.findByRole("button", { name: "Verified (1)" }),
+    )
+    await user.click(await screen.findByRole("button", { name: "Install" }))
+    const dialog = await screen.findByRole("alertdialog")
+
+    expect(within(dialog).getByText(/Needs plugin API 3/)).toBeVisible()
+    expect(
+      within(dialog).getByRole("button", { name: "Install" }),
+    ).toBeDisabled()
+    expect(within(dialog).getByText("Loads in: standalone")).toBeVisible()
+    expect(
+      within(dialog).getByText("Dashboard pages: Agent gates"),
+    ).toBeVisible()
+    expect(
+      within(dialog).getByText(/Settings editable from the dashboard/),
+    ).toHaveTextContent("judge_timeout_seconds")
+    expect(within(dialog).getByText(/a label, not a sandbox/)).toBeVisible()
+  })
+
   it("says what a plugin adds from the listing's own manifest, without a describe call", async () => {
     const calls = mockApi({
       marketplace: marketplaceResponse({
@@ -461,7 +503,7 @@ describe("MarketplacePage", () => {
       "API routes under /api/v1/plugins/agent-gates",
       "otari command groups",
       "database tables of its own",
-      "a page in the dashboard",
+      "pages in the dashboard",
     ])
     expect(
       within(dialog).getByText(/Reads these config keys/),
@@ -546,7 +588,7 @@ describe("MarketplacePage", () => {
     expect(await within(dialog).findByText("What it adds")).toBeVisible()
     expect(
       within(dialog).getByText(
-        "watches inference traffic passing through this gateway",
+        "watches inference traffic, and can block or steer it",
       ),
     ).toBeVisible()
     expect(within(dialog).queryByText(/Reads these config keys/)).toBeNull()

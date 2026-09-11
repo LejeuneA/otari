@@ -43,6 +43,7 @@ import { Route as ToolsCodeExecutionRouteImport } from './routes/tools.code-exec
 import { Route as ToolsGuardrailsRouteImport } from './routes/tools.guardrails'
 import { Route as ToolsMcpServersRouteImport } from './routes/tools.mcp-servers'
 import { Route as ToolsWebSearchRouteImport } from './routes/tools.web-search'
+import { Route as PluginsNamePageRouteImport } from './routes/plugins.$name.$page'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -215,6 +216,11 @@ const ToolsWebSearchRoute = ToolsWebSearchRouteImport.update({
   path: '/web-search',
   getParentRoute: () => ToolsRoute,
 } as any)
+const PluginsNamePageRoute = PluginsNamePageRouteImport.update({
+  id: '/$page',
+  path: '/$page',
+  getParentRoute: () => PluginsNameRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -244,13 +250,14 @@ export interface FileRoutesByFullPath {
   '/organization/pricing': typeof OrganizationPricingRoute
   '/organization/provider-keys': typeof OrganizationProviderKeysRoute
   '/organization/usage': typeof OrganizationUsageRoute
-  '/plugins/$name': typeof PluginsNameRoute
+  '/plugins/$name': typeof PluginsNameRouteWithChildren
   '/tools/code-execution': typeof ToolsCodeExecutionRoute
   '/tools/guardrails': typeof ToolsGuardrailsRoute
   '/tools/mcp-servers': typeof ToolsMcpServersRoute
   '/tools/web-search': typeof ToolsWebSearchRoute
   '/organization/': typeof OrganizationIndexRoute
   '/tools/': typeof ToolsIndexRoute
+  '/plugins/$name/$page': typeof PluginsNamePageRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -278,13 +285,14 @@ export interface FileRoutesByTo {
   '/organization/pricing': typeof OrganizationPricingRoute
   '/organization/provider-keys': typeof OrganizationProviderKeysRoute
   '/organization/usage': typeof OrganizationUsageRoute
-  '/plugins/$name': typeof PluginsNameRoute
+  '/plugins/$name': typeof PluginsNameRouteWithChildren
   '/tools/code-execution': typeof ToolsCodeExecutionRoute
   '/tools/guardrails': typeof ToolsGuardrailsRoute
   '/tools/mcp-servers': typeof ToolsMcpServersRoute
   '/tools/web-search': typeof ToolsWebSearchRoute
   '/organization': typeof OrganizationIndexRoute
   '/tools': typeof ToolsIndexRoute
+  '/plugins/$name/$page': typeof PluginsNamePageRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -315,13 +323,14 @@ export interface FileRoutesById {
   '/organization/pricing': typeof OrganizationPricingRoute
   '/organization/provider-keys': typeof OrganizationProviderKeysRoute
   '/organization/usage': typeof OrganizationUsageRoute
-  '/plugins/$name': typeof PluginsNameRoute
+  '/plugins/$name': typeof PluginsNameRouteWithChildren
   '/tools/code-execution': typeof ToolsCodeExecutionRoute
   '/tools/guardrails': typeof ToolsGuardrailsRoute
   '/tools/mcp-servers': typeof ToolsMcpServersRoute
   '/tools/web-search': typeof ToolsWebSearchRoute
   '/organization/': typeof OrganizationIndexRoute
   '/tools/': typeof ToolsIndexRoute
+  '/plugins/$name/$page': typeof PluginsNamePageRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -360,6 +369,7 @@ export interface FileRouteTypes {
     | '/tools/web-search'
     | '/organization/'
     | '/tools/'
+    | '/plugins/$name/$page'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -394,6 +404,7 @@ export interface FileRouteTypes {
     | '/tools/web-search'
     | '/organization'
     | '/tools'
+    | '/plugins/$name/$page'
   id:
     | '__root__'
     | '/'
@@ -430,6 +441,7 @@ export interface FileRouteTypes {
     | '/tools/web-search'
     | '/organization/'
     | '/tools/'
+    | '/plugins/$name/$page'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -454,7 +466,7 @@ export interface RootRouteChildren {
   UsageRoute: typeof UsageRoute
   WorkspacesRoute: typeof WorkspacesRoute
   AdminAccountsRoute: typeof AdminAccountsRoute
-  PluginsNameRoute: typeof PluginsNameRoute
+  PluginsNameRoute: typeof PluginsNameRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -697,6 +709,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ToolsWebSearchRouteImport
       parentRoute: typeof ToolsRoute
     }
+    '/plugins/$name/$page': {
+      id: '/plugins/$name/$page'
+      path: '/$page'
+      fullPath: '/plugins/$name/$page'
+      preLoaderRoute: typeof PluginsNamePageRouteImport
+      parentRoute: typeof PluginsNameRoute
+    }
   }
 }
 
@@ -742,6 +761,18 @@ const ToolsRouteChildren: ToolsRouteChildren = {
 
 const ToolsRouteWithChildren = ToolsRoute._addFileChildren(ToolsRouteChildren)
 
+interface PluginsNameRouteChildren {
+  PluginsNamePageRoute: typeof PluginsNamePageRoute
+}
+
+const PluginsNameRouteChildren: PluginsNameRouteChildren = {
+  PluginsNamePageRoute: PluginsNamePageRoute,
+}
+
+const PluginsNameRouteWithChildren = PluginsNameRoute._addFileChildren(
+  PluginsNameRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SplatRoute: SplatRoute,
@@ -764,7 +795,7 @@ const rootRouteChildren: RootRouteChildren = {
   UsageRoute: UsageRoute,
   WorkspacesRoute: WorkspacesRoute,
   AdminAccountsRoute: AdminAccountsRoute,
-  PluginsNameRoute: PluginsNameRoute,
+  PluginsNameRoute: PluginsNameRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

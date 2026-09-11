@@ -58,7 +58,8 @@ export function InstallPluginDialog({
   onConfirm: () => void
 }) {
   const [typed, setTyped] = useState("")
-  const confirmed = verified || typed.trim() === confirmation
+  const [unsupported, setUnsupported] = useState(false)
+  const confirmed = (verified || typed.trim() === confirmation) && !unsupported
 
   return (
     <ConfirmDialog
@@ -66,7 +67,10 @@ export function InstallPluginDialog({
       onOpenChange={(open) => {
         // The typed name belongs to one opening. A second dialog for a second
         // plugin must start empty, or the name from the first confirms it.
-        if (!open) setTyped("")
+        if (!open) {
+          setTyped("")
+          setUnsupported(false)
+        }
         onOpenChange(open)
       }}
       heading={heading}
@@ -79,7 +83,13 @@ export function InstallPluginDialog({
       body={
         <div className="flex flex-col gap-4">
           <p>{summary}</p>
-          {entry ? <ManifestBlock entry={entry} isOpen={isOpen} /> : null}
+          {entry ? (
+            <ManifestBlock
+              entry={entry}
+              isOpen={isOpen}
+              onSupported={(supported) => setUnsupported(!supported)}
+            />
+          ) : null}
           {verified ? (
             <p>It loads on the next restart of the gateway.</p>
           ) : (
@@ -110,13 +120,24 @@ export function InstallPluginDialog({
 function ManifestBlock({
   entry,
   isOpen,
+  onSupported,
 }: {
   entry: MarketplacePlugin
   isOpen: boolean
+  /** Whether this gateway provides the plugin API the manifest wants. */
+  onSupported: (supported: boolean) => void
 }) {
   const needsDescribe = isOpen && !entry.manifest
   const describe = useDescribePlugin(entry.repo, entry.ref, needsDescribe)
   const manifest = entry.manifest ?? (needsDescribe ? describe.data : undefined)
+  // Reported once the manifest is known, so the confirm is held only for a
+  // plugin this gateway cannot load; an unreadable manifest holds nothing.
+  const [reported, setReported] = useState<boolean>()
+  const supported = manifest?.supported_here
+  if (supported !== undefined && supported !== reported) {
+    setReported(supported)
+    onSupported(supported)
+  }
 
   if (manifest) {
     return <ManifestSummary manifest={manifest} />
@@ -139,6 +160,8 @@ function ManifestBlock({
 }
 
 function ManifestSummary({ manifest }: { manifest: PluginManifestSummary }) {
+  const settingKeys = (manifest.settings ?? []).map((field) => field.key)
+  const pages = manifest.pages ?? []
   return (
     <div className="flex flex-col gap-2">
       {manifest.needs_newer_gateway ? (
@@ -146,6 +169,12 @@ function ManifestSummary({ manifest }: { manifest: PluginManifestSummary }) {
           This gateway will not load it: {manifest.needs_newer_gateway}.
         </p>
       ) : null}
+      {manifest.supported_here ? null : (
+        <p className="text-danger">
+          Needs plugin API {manifest.plugin_api}; this gateway provides an older
+          one, so it would not load. Update the gateway first.
+        </p>
+      )}
       <p className="text-emphasis">What it adds</p>
       {manifest.contributes.length > 0 ? (
         <ul className="list-disc flex flex-col gap-1 pl-5">
@@ -158,6 +187,23 @@ function ManifestSummary({ manifest }: { manifest: PluginManifestSummary }) {
       ) : (
         <p>Nothing declared.</p>
       )}
+      <p className="text-subtle">
+        This declaration is enforced when the plugin loads, but it is a label,
+        not a sandbox: a loaded plugin is code running inside the gateway.
+      </p>
+      <p>Loads in: {manifest.modes.join(", ")}</p>
+      {pages.length > 0 ? <p>Dashboard pages: {pages.join(", ")}</p> : null}
+      {settingKeys.length > 0 ? (
+        <p>
+          Settings editable from the dashboard:{" "}
+          {settingKeys.map((key, index) => (
+            <span key={key}>
+              {index > 0 ? ", " : null}
+              <code>{key}</code>
+            </span>
+          ))}
+        </p>
+      ) : null}
       {manifest.config_keys.length > 0 ? (
         <p>
           Reads these config keys:{" "}

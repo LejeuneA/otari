@@ -165,6 +165,7 @@ export function MarketplacePage() {
             plugins={installed}
             problems={plugins.data?.problems ?? []}
             installAllowed={installAllowed}
+            pluginApi={plugins.data?.plugin_api}
             onRemove={openRemove}
           />
         )

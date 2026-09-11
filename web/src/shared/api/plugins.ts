@@ -5,13 +5,18 @@ import type {
   InstallPluginResponse,
   MarketplaceResponse,
   PluginManifestSummary,
+  PluginPagesResponse,
+  PluginSettingsResponse,
   PluginsResponse,
+  UpdatePluginSettingsRequest,
 } from "@/client"
 import { apiFetch, longRequestSignal } from "@/shared/api/client"
 import {
   NO_RETRY,
   PLUGIN_DESCRIBE,
   PLUGIN_MARKETPLACE,
+  PLUGIN_PAGES,
+  PLUGIN_SETTINGS,
   PLUGINS,
 } from "@/shared/api/queryKeys"
 
@@ -25,6 +30,54 @@ export function usePlugins(enabled = true) {
     // invalidate it; a minute covers the restart.
     staleTime: 60_000,
     enabled,
+  })
+}
+
+/**
+ * The pages loaded plugins ship, for the rail. Every signed-in session may ask:
+ * the gateway answers with the pages that caller is allowed to see, so the
+ * caller axis is decided there rather than here, and a member gets the pages a
+ * plugin declared for members.
+ */
+export function usePluginPages(enabled = true) {
+  return useQuery({
+    queryKey: [PLUGIN_PAGES],
+    queryFn: () => apiFetch<PluginPagesResponse>("/plugins/pages"),
+    // Changes only on a restart, so the rail need not re-ask while a tab lives.
+    staleTime: 5 * 60_000,
+    enabled,
+  })
+}
+
+/** One plugin's typed settings and their live values. */
+export function usePluginSettings(name: string, enabled = true) {
+  return useQuery({
+    queryKey: [PLUGIN_SETTINGS, name],
+    queryFn: () =>
+      apiFetch<PluginSettingsResponse>(
+        `/plugins/${encodeURIComponent(name)}/settings`,
+      ),
+    enabled,
+  })
+}
+
+/**
+ * Change a plugin's settings. Sends only the keys that changed; a `null`
+ * clears one back to what config.yml or the manifest default says.
+ */
+export function useUpdatePluginSettings(name: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: UpdatePluginSettingsRequest) =>
+      apiFetch<PluginSettingsResponse>(
+        `/plugins/${encodeURIComponent(name)}/settings`,
+        { method: "PUT", body: JSON.stringify(body) },
+      ),
+    onSuccess: (data) => {
+      queryClient.setQueryData([PLUGIN_SETTINGS, name], data)
+      // The installed list carries the same fields, so it is re-read too.
+      void queryClient.invalidateQueries({ queryKey: [PLUGINS] })
+    },
   })
 }
 

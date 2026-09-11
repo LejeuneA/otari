@@ -8,7 +8,6 @@ import {
   FiArrowLeft,
   FiChevronDown,
   FiChevronRight,
-  FiLayout,
   FiMenu,
   FiSettings,
   FiSidebar,
@@ -40,7 +39,12 @@ import {
   useRouteVisibility,
   useSurfaceVisibility,
 } from "@/app/nav/useNavVisibility"
-import { usePluginPages } from "@/app/nav/usePluginPages"
+import {
+  type PluginPage,
+  pluginPagesForParent,
+  pluginPagesForSection,
+  usePluginPages,
+} from "@/app/nav/usePluginPages"
 import { WorkspaceSwitcher } from "@/app/nav/WorkspaceSwitcher"
 import { EntitlementResolver } from "@/app/overlayEntitlementResolver"
 import { PostSignInGate } from "@/app/overlayPostSignInGate"
@@ -161,6 +165,13 @@ function useRecordNavigation(): (to: NavPath, isActive: boolean) => void {
  * because the visible text is what a sighted reader loses and the only thing an
  * assistive one had.
  */
+// The two rail groups a plugin page may nest under, by the registry path that
+// names each; the manifest vocabulary is the pair on the right.
+const PLUGIN_PARENT_BY_PATH: Partial<Record<string, "tools" | "routing">> = {
+  "/tools": "tools",
+  "/routing": "routing",
+}
+
 function NavRowLink({
   to,
   label,
@@ -236,20 +247,32 @@ function NavGroup({
   onNavigate,
   isVisible,
   collapsed,
+  pluginChildren = [],
 }: {
   item: NavItem
   currentPath: string
   onNavigate: () => void
   isVisible: (item: NavItem) => boolean
   collapsed: boolean
+  /** Plugin pages whose manifest nests them under this group, after its own. */
+  pluginChildren?: readonly PluginPage[]
 }) {
   // A child declaring its own surface is gated on it. Without this the field
   // was decoration: Guardrails is grouped under Routing but served by the tools
   // surface, so a deployment without that surface kept the link and landed on
   // the "not available here" panel.
-  const children = (item.children ?? []).filter((child) =>
-    child.surface ? isVisible({ ...item, surface: child.surface }) : true,
-  )
+  const children: { to: NavPath; label: string; icon: IconType }[] = [
+    ...(item.children ?? []).filter((child) =>
+      child.surface ? isVisible({ ...item, surface: child.surface }) : true,
+    ),
+    // A plugin's row wears the same shape as a registry child, so the one-child
+    // collapse and the flyout below need no second code path for it.
+    ...pluginChildren.map((page) => ({
+      to: page.path as NavPath,
+      label: page.label,
+      icon: page.icon,
+    })),
+  ]
   const holdsCurrent = children.some((child) => child.to === currentPath)
   const [open, setOpen] = useState(holdsCurrent)
   const [flyoutOpen, setFlyoutOpen] = useState(false)
@@ -561,6 +584,10 @@ function AppShellChrome() {
     showOrganizationRail ? ORG_NAV_SECTIONS : NAV_SECTIONS,
     isVisible,
   )
+  // The rows the registry cannot declare, placed where each plugin's manifest
+  // says: at the end of a section, or nested under Tools or Routing. Read here
+  // rather than inside the map because it is a hook.
+  const pluginPages = usePluginPages()
 
   // Track the mobile breakpoint so the sidebar can render as an off-canvas
   // drawer below it and as the fixed-width rail above it. Closing the drawer when
@@ -864,6 +891,10 @@ function AppShellChrome() {
                             onNavigate={closeMobileNav}
                             isVisible={isVisible}
                             collapsed={effectiveCollapsed}
+                            pluginChildren={pluginPagesForParent(
+                              pluginPages,
+                              PLUGIN_PARENT_BY_PATH[item.to] ?? null,
+                            )}
                           />
                         ) : (
                           // Highlighted from the registry's own answer rather than
@@ -886,24 +917,25 @@ function AppShellChrome() {
                           />
                         ),
                       )}
-                      {/* A loaded plugin's page is a row under Marketplace,
-                          drawn as any other leaf. `to` is the resolved path
-                          rather than the `$name` route with params, so the
-                          row's own name is what a navigation records and what
-                          a bookmark reads; the route tree still matches it. */}
-                      {section.id === "extend"
-                        ? pluginPages.map((page) => (
-                            <NavRowLink
-                              key={page.path}
-                              to={page.path as NavPath}
-                              label={page.label}
-                              icon={FiLayout}
-                              isActive={pathname === page.path}
-                              collapsed={effectiveCollapsed}
-                              onNavigate={closeMobileNav}
-                            />
-                          ))
-                        : null}
+                      {/* A loaded plugin's page is a row at the end of the
+                          section its manifest named, drawn as any other leaf.
+                          `to` is the resolved path rather than the `$name`
+                          route with params, so the row's own name is what a
+                          navigation records and what a bookmark reads; the
+                          route tree still matches it. */}
+                      {pluginPagesForSection(pluginPages, section.id).map(
+                        (page) => (
+                          <NavRowLink
+                            key={page.path}
+                            to={page.path as NavPath}
+                            label={page.label}
+                            icon={page.icon}
+                            isActive={pathname === page.path}
+                            collapsed={effectiveCollapsed}
+                            onNavigate={closeMobileNav}
+                          />
+                        ),
+                      )}
                     </div>
                   </section>
                 )

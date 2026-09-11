@@ -24,6 +24,7 @@ import {
   callerOrganizationMembership,
   installedPlugin,
   organizationContext,
+  pluginPage,
   pluginsResponse,
 } from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
@@ -120,8 +121,18 @@ function renderShell(
     if (path.includes(`${API_ROOT}/settings`)) {
       return Response.json(options.settings ?? SETTINGS_WITH_PRICING)
     }
-    // Read by the rail for the plugin rows under Marketplace, once the caller
-    // is known to be an operator. Empty unless a case is about those rows.
+    // Read by the rail for the plugin rows: the pages of every loaded plugin,
+    // narrowed the way the gateway narrows them, to the member pages for a
+    // caller who is not an operator. Empty unless a case is about those rows.
+    if (path.startsWith(`${API_ROOT}/plugins/pages`)) {
+      const operator = options.operator ?? true
+      return Response.json({
+        pages: (options.plugins ?? [])
+          .filter((plugin) => plugin.status === "loaded")
+          .flatMap((plugin) => plugin.pages ?? [])
+          .filter((page) => operator || page.audience === "member"),
+      })
+    }
     if (path.startsWith(`${API_ROOT}/plugins`)) {
       return Response.json(pluginsResponse({ plugins: options.plugins ?? [] }))
     }
@@ -625,7 +636,7 @@ describe("AppShell surface gating", () => {
       plugins: [
         installedPlugin(),
         // No page to open, so no row: the plugin is still listed on Marketplace.
-        installedPlugin({ name: "audit-log", ui: null }),
+        installedPlugin({ name: "audit-log", ui: null, pages: [] }),
         // A page it would have served, had it loaded.
         installedPlugin({
           name: "broken",
@@ -662,6 +673,110 @@ describe("AppShell surface gating", () => {
     expect(document.title).toBe("Agent gates · Otari")
   })
 
+  it("places a plugin's row in the section and under the parent its manifest names", async () => {
+    mockMatchMedia(false)
+    const user = userEvent.setup()
+    await renderShell(bootstrap(), {
+      plugins: [
+        installedPlugin({
+          name: "audit",
+          pages: [
+            // In Observe, after Activity and Usage, with its own glyph.
+            pluginPage({
+              id: "index",
+              label: "Audit log",
+              path: "/plugins/audit",
+              url: "/plugins/audit/ui/",
+              section: "observe",
+              icon: "eye",
+            }),
+            // Nested under Tools, after the registry's own children.
+            pluginPage({
+              id: "scan",
+              label: "PII scan",
+              path: "/plugins/audit/scan",
+              url: "/plugins/audit/ui/scan/",
+              parent: "tools",
+              icon: "shield",
+            }),
+            // No row at all: reachable from the plugin's card only.
+            pluginPage({
+              id: "hidden",
+              label: "Hidden page",
+              path: "/plugins/audit/hidden",
+              url: "/plugins/audit/ui/hidden/",
+              section: "none",
+            }),
+          ],
+        }),
+      ],
+    })
+
+    const observe = await screen.findByRole("region", { name: "Observe" })
+    const audit = await within(observe).findByRole("link", {
+      name: "Audit log",
+    })
+    expect(audit).toHaveAttribute("href", "/plugins/audit")
+    expect(
+      within(observe)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Activity", "Usage", "Audit log"])
+    expect(screen.queryByRole("link", { name: "Hidden page" })).toBeNull()
+
+    // The nested row lives inside the Tools group, so it shows once the group
+    // is opened, after the tools the registry declares.
+    await user.click(screen.getByRole("button", { name: /Tools/ }))
+    const scan = await screen.findByRole("link", { name: "PII scan" })
+    expect(scan).toHaveAttribute("href", "/plugins/audit/scan")
+    const build = screen.getByRole("region", { name: "Build" })
+    const labels = within(build)
+      .getAllByRole("link")
+      .map((link) => link.textContent)
+    expect(labels.indexOf("PII scan")).toBeGreaterThan(
+      labels.indexOf("Code execution"),
+    )
+    // Not in Extend, which only holds pages that asked for it.
+    const extend = screen.getByRole("region", { name: "Extend" })
+    expect(within(extend).queryByRole("link", { name: "Audit log" })).toBeNull()
+  })
+
+  it("shows a member the plugin pages declared for members, without the operator list", async () => {
+    mockMatchMedia(false)
+    await renderShell(bootstrap(), {
+      operator: false,
+      plugins: [
+        installedPlugin({
+          name: "audit",
+          pages: [
+            pluginPage({
+              id: "index",
+              label: "My usage",
+              path: "/plugins/audit",
+              url: "/plugins/audit/ui/",
+              section: "observe",
+              audience: "member",
+            }),
+            pluginPage({
+              id: "admin",
+              label: "Audit admin",
+              path: "/plugins/audit/admin",
+              url: "/plugins/audit/ui/admin/",
+              section: "observe",
+            }),
+          ],
+        }),
+      ],
+    })
+
+    const observe = await screen.findByRole("region", { name: "Observe" })
+    expect(
+      await within(observe).findByRole("link", { name: "My usage" }),
+    ).toHaveAttribute("href", "/plugins/audit")
+    expect(screen.queryByRole("link", { name: "Audit admin" })).toBeNull()
+    expect(screen.queryByRole("link", { name: "Marketplace" })).toBeNull()
+  })
+
   it("withholds Marketplace and the plugin rows from a caller who is not an operator", async () => {
     mockMatchMedia(false)
     await renderShell(bootstrap(), {
@@ -676,14 +791,15 @@ describe("AppShell surface gating", () => {
     expect(screen.queryByRole("link", { name: "Marketplace" })).toBeNull()
     expect(screen.queryByRole("link", { name: "Agent gates" })).toBeNull()
     expect(screen.queryByText("Extend")).toBeNull()
-    // And the list was never asked for: `GET /plugins` refuses a member, so
-    // the rail does not make a request it knows the answer to.
+    // The list was never asked for: `GET /plugins` refuses a member, so the
+    // rail does not make a request it knows the answer to. The pages route is
+    // the one plugin read a member may make, and it answered with nothing.
     expect(
       vi
         .mocked(globalThis.fetch)
         .mock.calls.map(([input]) => String(input))
         .filter((url) => url.startsWith(`${API_ROOT}/plugins`)),
-    ).toEqual([])
+    ).toEqual([`${API_ROOT}/plugins/pages`])
   })
 
   it("hides a destination whose surface the deployment does not host", async () => {

@@ -25,6 +25,8 @@ import type {
   OrgProviderKey,
   PendingOrganizationInvitation,
   PluginManifestSummary,
+  PluginPageInfo,
+  PluginSettingField,
   PluginsResponse,
   PricingResponse,
   ScopedBudget,
@@ -732,13 +734,56 @@ export function installedPlugin(
     homepage: "https://github.com/mozilla-ai/otari-agent-gates",
     getting_started:
       "https://github.com/mozilla-ai/otari-agent-gates#getting-started",
+    plugin_api: 1,
+    modes: ["standalone"],
     contributes: ["routes", "cli", "migrations", "ui"],
     config_keys: ["agent_gates"],
+    settings: [],
     ui: { label: "Agent gates", url: "/plugins/agent-gates/ui/" },
+    pages: [pluginPage()],
     api_prefix: "/plugins/agent-gates",
     routes: 3,
     cli_commands: ["policy"],
     migrations: true,
+    guardrails: [],
+    tools: [],
+    router_backends: [],
+    events: [],
+    traffic: false,
+    health: null,
+    ...overrides,
+  }
+}
+
+/** One page a plugin ships, in the Extend section by default, as the manifest's short form yields. */
+export function pluginPage(
+  overrides: Partial<PluginPageInfo> = {},
+): PluginPageInfo {
+  return {
+    id: "index",
+    label: "Agent gates",
+    url: "/plugins/agent-gates/ui/",
+    path: "/plugins/agent-gates",
+    icon: "layout",
+    section: "extend",
+    parent: null,
+    order: 100,
+    audience: "operator",
+    ...overrides,
+  }
+}
+
+/** One typed setting, as a plugin's manifest declares it. */
+export function pluginSettingField(
+  overrides: Partial<PluginSettingField> = {},
+): PluginSettingField {
+  return {
+    key: "judge_timeout_seconds",
+    type: "int",
+    default: 120,
+    description: "Cap on one judge call.",
+    secret: false,
+    editable: true,
     ...overrides,
   }
 }
@@ -754,6 +799,7 @@ export function pluginsResponse(
     // the callout turns it off.
     install_allowed: true,
     restart_required: false,
+    plugin_api: 1,
     ...overrides,
   }
 }
@@ -769,8 +815,13 @@ export function pluginManifest(
     homepage: "https://github.com/example/otari-request-log",
     getting_started:
       "https://github.com/example/otari-request-log#getting-started",
+    plugin_api: 1,
+    supported_here: true,
+    modes: ["standalone", "hosted", "hybrid"],
     contributes: ["routes", "traffic"],
     config_keys: ["request_log.path"],
+    settings: [],
+    pages: [],
     ...overrides,
   }
 }

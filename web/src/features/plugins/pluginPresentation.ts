@@ -37,9 +37,19 @@ export function contributionDescription(
     case "migrations":
       return "database tables of its own"
     case "ui":
-      return "a page in the dashboard"
+      return "pages in the dashboard"
     case "traffic":
-      return "watches inference traffic passing through this gateway"
+      return "watches inference traffic, and can block or steer it"
+    case "lifecycle":
+      return "runs code at startup and shutdown, and reports into /health"
+    case "events":
+      return "reacts to gateway events (usage logged, budget exceeded, key created)"
+    case "guardrails":
+      return "guardrail profiles a request or a policy can name"
+    case "tools":
+      return "tools the gateway runs for the model"
+    case "routing":
+      return "router backends a routing policy can name"
     default:
       return `${contribution} (needs a newer gateway)`
   }
@@ -57,11 +67,36 @@ export function contributionChipLabel(
     case "migrations":
       return "Tables"
     case "ui":
-      return "Page"
+      return "Pages"
     case "traffic":
       return "Watches traffic"
+    case "lifecycle":
+      return "Lifecycle"
+    case "events":
+      return "Events"
+    case "guardrails":
+      return "Guardrails"
+    case "tools":
+      return "Tools"
+    case "routing":
+      return "Routing"
     default:
       return contribution
+  }
+}
+
+/** The contributions that reach into a request, which the chip colors apart. */
+export function contributionChipTone(
+  contribution: PluginContribution,
+): ChipTone {
+  switch (contribution) {
+    case "traffic":
+    case "guardrails":
+    case "tools":
+    case "routing":
+      return "info"
+    default:
+      return "neutral"
   }
 }
 

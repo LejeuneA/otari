@@ -110,6 +110,12 @@ export const PLUGIN_MARKETPLACE = "plugin-marketplace"
 // and ref, and not under the marketplace key: an install changes the listing
 // and not what the repository declares.
 export const PLUGIN_DESCRIBE = "plugin-describe"
+// The pages loaded plugins ship, for the rail. Its own key because it is the
+// one plugin read a member may make: the server answers with the pages that
+// caller may see, so it is not derivable from the operator-only list.
+export const PLUGIN_PAGES = "plugin-pages"
+// One plugin's typed settings and their live values, keyed by plugin name.
+export const PLUGIN_SETTINGS = "plugin-settings"
 
 // How often an open tab asks whether the app it is running is still the one the
 // gateway serves. Cheap (a hash of one small file) and only while the tab is

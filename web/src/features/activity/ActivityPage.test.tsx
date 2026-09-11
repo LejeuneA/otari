@@ -458,6 +458,46 @@ describe("ActivityPage", () => {
     expect(screen.getByText("Error (502)")).toBeInTheDocument()
   })
 
+  it("says what a plugin did to a request, on the row and in its detail", async () => {
+    const user = userEvent.setup()
+    mockApi({
+      rows: [
+        entry({
+          plugin_annotations: {
+            "agent-gates": {
+              denied: [
+                {
+                  tool_call_id: "c1",
+                  name: "Bash",
+                  message: "Never force-push.",
+                },
+              ],
+              injected_system: true,
+              fired: ["no-force-push"],
+              session: "s-42",
+            },
+          },
+        }),
+      ],
+    })
+    renderPage(<ActivityPage />)
+
+    const row = (await screen.findByText("gpt-4o")).closest("tr")!
+    expect(within(row).getByText("Denied a tool call")).toBeInTheDocument()
+
+    await user.click(row)
+    const block = screen.getByRole("list", { name: "Plugin annotations" })
+    expect(within(block).getByText("agent-gates")).toBeInTheDocument()
+    expect(
+      within(block).getByText("Denied Bash: Never force-push."),
+    ).toBeInTheDocument()
+    expect(within(block).getByText("Added system text")).toBeInTheDocument()
+    expect(
+      within(block).getByText(/fired: \["no-force-push"\]/),
+    ).toBeInTheDocument()
+    expect(within(block).getByText(/session: s-42/)).toBeInTheDocument()
+  })
+
   it("omits the status code from the error heading when none was recorded", async () => {
     const user = userEvent.setup()
     mockApi({

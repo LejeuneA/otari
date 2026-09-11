@@ -20,6 +20,7 @@ import {
 } from "@/design-system/data/TablePagination"
 import { ConfirmDialog } from "@/design-system/feedback/ConfirmDialog"
 import { ErrorBanner } from "@/design-system/feedback/ErrorBanner"
+import { Chip } from "@/design-system/indicators/Chip"
 import { Dot } from "@/design-system/indicators/Dot"
 import { PageIntro } from "@/design-system/layout/PageIntro"
 import { TableScrollFrame } from "@/design-system/layout/TableScrollFrame"
@@ -908,6 +909,113 @@ function RoutingPlan({ entry }: { entry: UsageEntry }) {
 // `copyValue` adds a copy control for the fields that hold an opaque identifier
 // (a request id, an api key id): they are what an operator pastes into a log
 // search or a support thread, and a mistyped character makes them useless.
+type Annotations = Record<string, unknown>
+
+function hasPluginAnnotations(entry: UsageEntry): boolean {
+  const annotations = entry.plugin_annotations
+  return (
+    annotations !== null &&
+    annotations !== undefined &&
+    Object.keys(annotations).length > 0
+  )
+}
+
+/** The plugins that blocked, denied, or steered this request, in one word for the row. */
+function pluginIntervention(entry: UsageEntry): string | null {
+  if (!hasPluginAnnotations(entry)) return null
+  const each = Object.values(entry.plugin_annotations ?? {}).map(
+    (value) => (value ?? {}) as Annotations,
+  )
+  if (each.some((one) => one.blocked || one.blocked_response)) return "Blocked"
+  if (each.some((one) => Array.isArray(one.denied) && one.denied.length > 0)) {
+    return "Denied a tool call"
+  }
+  if (each.some((one) => one.would_block)) return "Would block"
+  return null
+}
+
+const INTERVENTION_KEYS = new Set([
+  "blocked",
+  "blocked_response",
+  "would_block",
+  "denied",
+  "injected_system",
+])
+
+function formatAnnotation(value: unknown): string {
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value)
+  }
+  return JSON.stringify(value)
+}
+
+// What each plugin's traffic observer wrote on the row: the interventions as
+// chips, since those changed what the caller got, and everything else as the
+// compact key and value it is. Under the routing plan, above the metadata, for
+// the reason the plan is: a refusal answers the first question a row raises.
+function PluginAnnotations({ entry }: { entry: UsageEntry }) {
+  const annotations = entry.plugin_annotations ?? {}
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-overline">Plugins</span>
+      <ul
+        aria-label="Plugin annotations"
+        className="flex flex-col gap-2 rounded-lg border border-border p-3"
+      >
+        {Object.entries(annotations).map(([plugin, value]) => {
+          const fields = (value ?? {}) as Annotations
+          const denied = Array.isArray(fields.denied)
+            ? (fields.denied as { name?: unknown; message?: unknown }[])
+            : []
+          const rest = Object.entries(fields).filter(
+            ([key]) => !INTERVENTION_KEYS.has(key),
+          )
+          return (
+            <li key={plugin} className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-emphasis">{plugin}</span>
+                {typeof fields.blocked === "string" ? (
+                  <Chip tone="danger">Blocked: {fields.blocked}</Chip>
+                ) : null}
+                {typeof fields.blocked_response === "string" ? (
+                  <Chip tone="danger">
+                    Withheld the answer: {fields.blocked_response}
+                  </Chip>
+                ) : null}
+                {typeof fields.would_block === "string" ? (
+                  <Chip tone="danger">
+                    Would have withheld: {fields.would_block}
+                  </Chip>
+                ) : null}
+                {denied.map((one, index) => (
+                  <Chip key={`${String(one.name)}-${index}`} tone="warning">
+                    Denied {String(one.name ?? "a tool call")}:{" "}
+                    {String(one.message ?? "")}
+                  </Chip>
+                ))}
+                {fields.injected_system ? (
+                  <Chip tone="info">Added system text</Chip>
+                ) : null}
+              </div>
+              {rest.length > 0 ? (
+                <p className="text-caption text-subtle break-all">
+                  {rest.map(([key, one], index) => (
+                    <span key={key}>
+                      {index > 0 ? " · " : null}
+                      {key}: {formatAnnotation(one)}
+                    </span>
+                  ))}
+                </p>
+              ) : null}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
 function DetailField({
   label,
   copyValue,
@@ -998,6 +1106,7 @@ function RequestDetail({
       {entry.policy_name !== null && entry.policy_name !== undefined ? (
         <RoutingPlan entry={entry} />
       ) : null}
+      {hasPluginAnnotations(entry) ? <PluginAnnotations entry={entry} /> : null}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <DetailField label="Provider">{entry.provider ?? "—"}</DetailField>
         <DetailField label="Endpoint">{entry.endpoint}</DetailField>
@@ -2022,7 +2131,21 @@ export function ActivityPage() {
       {
         id: "status",
         header: "Status",
-        cell: (e) => <StatusMark status={e.status} />,
+        // A plugin that refused or altered the request is said beside the
+        // status, since the status alone reads as the provider's doing.
+        cell: (e) => {
+          const intervention = pluginIntervention(e)
+          return intervention ? (
+            <span className="flex flex-wrap items-center gap-2">
+              <StatusMark status={e.status} />
+              <Chip tone={intervention === "Blocked" ? "danger" : "warning"}>
+                {intervention}
+              </Chip>
+            </span>
+          ) : (
+            <StatusMark status={e.status} />
+          )
+        },
       },
     ]
   }, [groupOutcomes])
