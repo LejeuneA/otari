@@ -247,6 +247,17 @@ def test_settings_includes_full_config_view(tmp_path: Path) -> None:
         assert secret not in by_key, secret
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_web_fetch_enablement_is_visible_and_startup_only(enabled: bool) -> None:
+    config = GatewayConfig(web_fetch_enabled=enabled)
+    field = next(field for field in _config_fields(config) if field.key == "web_fetch_enabled")
+
+    assert field.value is enabled
+    assert field.group == "Tools & network access"
+    assert field.type == "bool"
+    assert field.settable is False
+
+
 def test_config_view_redacts_url_credentials() -> None:
     # A production database_url (or sandbox/guardrails url) can embed a secret;
     # the config view must show the host/db but never echo the secret back, even
