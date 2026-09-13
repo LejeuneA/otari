@@ -1742,6 +1742,220 @@
         "title": "BudgetResponse",
         "type": "object"
       },
+      "BuiltInGuardrailCatalog": {
+        "description": "Every guardrail this gateway ships, whether or not it can currently run it.",
+        "properties": {
+          "guardrails": {
+            "items": {
+              "$ref": "#/components/schemas/BuiltInGuardrailSpec"
+            },
+            "title": "Guardrails",
+            "type": "array"
+          }
+        },
+        "title": "BuiltInGuardrailCatalog",
+        "type": "object"
+      },
+      "BuiltInGuardrailSpec": {
+        "description": "One guardrail this gateway can construct and run itself.",
+        "properties": {
+          "alternate_backends": {
+            "description": "Other ways the same guardrail can run, where upstream offers a second path",
+            "items": {
+              "enum": [
+                "local_encoder",
+                "local_decoder",
+                "hosted_api",
+                "library_wrapped",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "title": "Alternate Backends",
+            "type": "array"
+          },
+          "backend": {
+            "description": "How it runs: a vendor API, a local model, or a wrapped library",
+            "enum": [
+              "local_encoder",
+              "local_decoder",
+              "hosted_api",
+              "library_wrapped",
+              "unknown"
+            ],
+            "title": "Backend",
+            "type": "string"
+          },
+          "categories": {
+            "description": "Everything it detects",
+            "items": {
+              "enum": [
+                "prompt_injection",
+                "content_safety",
+                "toxicity",
+                "pii",
+                "hallucination",
+                "off_topic",
+                "bias",
+                "tool_use",
+                "general_judge",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "create_parameters": {
+            "description": "Constructor arguments, which is where a vendor API key and an endpoint live",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailParameterSpec"
+            },
+            "title": "Create Parameters",
+            "type": "array"
+          },
+          "default_license": {
+            "description": "The license covering the guardrail unless a variant says otherwise",
+            "title": "Default License",
+            "type": "string"
+          },
+          "description": {
+            "description": "One line on what the guardrail checks",
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "description": "The guardrail's own name, for a picker row",
+            "title": "Display Name",
+            "type": "string"
+          },
+          "guardrail_name": {
+            "description": "The any-guardrail class, and the name a stored guardrail selects",
+            "title": "Guardrail Name",
+            "type": "string"
+          },
+          "missing_extra": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Otari extra to install to make this runnable, when one would. Null when it already runs, and null for a guardrail this gateway holds no backend information about",
+            "title": "Missing Extra"
+          },
+          "multilingual": {
+            "description": "Whether it is trained or documented beyond English",
+            "title": "Multilingual",
+            "type": "boolean"
+          },
+          "multimodal": {
+            "description": "Whether it accepts more than text",
+            "title": "Multimodal",
+            "type": "boolean"
+          },
+          "output_shapes": {
+            "description": "The shapes of verdict it can return",
+            "items": {
+              "enum": [
+                "binary",
+                "multi_label",
+                "categorical",
+                "score",
+                "rubric",
+                "span"
+              ],
+              "type": "string"
+            },
+            "title": "Output Shapes",
+            "type": "array"
+          },
+          "primary_category": {
+            "description": "What it mainly detects, for grouping a picker",
+            "enum": [
+              "prompt_injection",
+              "content_safety",
+              "toxicity",
+              "pii",
+              "hallucination",
+              "off_topic",
+              "bias",
+              "tool_use",
+              "general_judge",
+              "unknown"
+            ],
+            "title": "Primary Category",
+            "type": "string"
+          },
+          "requires_api_key": {
+            "description": "Whether it calls a vendor that charges for the call",
+            "title": "Requires Api Key",
+            "type": "boolean"
+          },
+          "runnable": {
+            "description": "Whether every module this guardrail's backend needs is installed here. False is a missing package and not a broken guardrail",
+            "title": "Runnable",
+            "type": "boolean"
+          },
+          "stages": {
+            "description": "Which text it is meant to be run on",
+            "items": {
+              "enum": [
+                "input",
+                "output",
+                "rag_context"
+              ],
+              "type": "string"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "supports_batch": {
+            "description": "Whether several inputs run as one call",
+            "title": "Supports Batch",
+            "type": "boolean"
+          },
+          "validate_parameters": {
+            "description": "Per-call arguments, sent with the text on every check",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailParameterSpec"
+            },
+            "title": "Validate Parameters",
+            "type": "array"
+          },
+          "variant_licenses": {
+            "description": "Per-variant licenses, where a guardrail's models are not all under the default",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailVariantLicense"
+            },
+            "title": "Variant Licenses",
+            "type": "array"
+          },
+          "vendor": {
+            "description": "Who publishes the guardrail or the model behind it",
+            "title": "Vendor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "guardrail_name",
+          "display_name",
+          "description",
+          "vendor",
+          "backend",
+          "primary_category",
+          "requires_api_key",
+          "multilingual",
+          "multimodal",
+          "supports_batch",
+          "default_license",
+          "runnable"
+        ],
+        "title": "BuiltInGuardrailSpec",
+        "type": "object"
+      },
       "CallToolResult": {
         "additionalProperties": true,
         "description": "The server's response to a tool call.",
@@ -4695,6 +4909,27 @@
           "parameters_known"
         ],
         "title": "GuardrailProfileSpec",
+        "type": "object"
+      },
+      "GuardrailVariantLicense": {
+        "description": "The license one model variant of a guardrail is served under.",
+        "properties": {
+          "license": {
+            "description": "SPDX-style license id, for example apache-2.0 or llama-3.2",
+            "title": "License",
+            "type": "string"
+          },
+          "model_id": {
+            "description": "The variant this license governs",
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id",
+          "license"
+        ],
+        "title": "GuardrailVariantLicense",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -26227,6 +26462,36 @@
           }
         ],
         "summary": "Update Tool Settings",
+        "tags": [
+          "tool-settings"
+        ]
+      }
+    },
+    "/api/v1/tool-settings/guardrails/catalog": {
+      "get": {
+        "description": "List the guardrails this gateway can run itself, for the form that defines one.\n\nEvery guardrail ``any_guardrail`` ships, with the constructor and per-call\narguments each one takes, so a guardrail is configured by picking it and\nfilling typed fields. This is the counterpart of\n``GET /api/v1/providers/catalog``: the same picker, for a guardrail rather\nthan a provider, and on the same gate that one takes.\n\nReaches no service, so there is no unavailable state to report. ``runnable``\nsays whether the modules a guardrail's backend needs are installed here,\nprobed rather than imported, and ``missing_extra`` names the Otari extra that\nwould fix it.\n\nOn the operator router rather than the reader beside it, on both halves of\nwhat it answers. It is the input to a write that stores a vendor API key\ndeployment-wide, which is an operator's action alone; and ``runnable``\ndescribes the host's installed packages, which is infrastructure rather than\nsomething a tenant is owed about their own requests. A profile *name* is the\none thing a caller needs, and the profiles read next door is where the set of\nthose is published.\n\nNot on ``verify_catalog_reader`` either: that plane is a closed set of three\ndeployment-describing reads a data-plane key may make, and this is a\nmanagement read, not one of them.",
+        "operationId": "tool-settings-list_builtin_guardrails",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuiltInGuardrailCatalog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "List Builtin Guardrails",
         "tags": [
           "tool-settings"
         ]

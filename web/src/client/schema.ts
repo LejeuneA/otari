@@ -3546,6 +3546,49 @@ export interface paths {
         patch: operations["tool-settings-update_tool_settings"];
         trace?: never;
     };
+    "/api/v1/tool-settings/guardrails/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Builtin Guardrails
+         * @description List the guardrails this gateway can run itself, for the form that defines one.
+         *
+         *     Every guardrail ``any_guardrail`` ships, with the constructor and per-call
+         *     arguments each one takes, so a guardrail is configured by picking it and
+         *     filling typed fields. This is the counterpart of
+         *     ``GET /api/v1/providers/catalog``: the same picker, for a guardrail rather
+         *     than a provider, and on the same gate that one takes.
+         *
+         *     Reaches no service, so there is no unavailable state to report. ``runnable``
+         *     says whether the modules a guardrail's backend needs are installed here,
+         *     probed rather than imported, and ``missing_extra`` names the Otari extra that
+         *     would fix it.
+         *
+         *     On the operator router rather than the reader beside it, on both halves of
+         *     what it answers. It is the input to a write that stores a vendor API key
+         *     deployment-wide, which is an operator's action alone; and ``runnable``
+         *     describes the host's installed packages, which is infrastructure rather than
+         *     something a tenant is owed about their own requests. A profile *name* is the
+         *     one thing a caller needs, and the profiles read next door is where the set of
+         *     those is published.
+         *
+         *     Not on ``verify_catalog_reader`` either: that plane is a closed set of three
+         *     deployment-describing reads a data-plane key may make, and this is a
+         *     management read, not one of them.
+         */
+        get: operations["tool-settings-list_builtin_guardrails"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tool-settings/guardrails/profiles": {
         parameters: {
             query?: never;
@@ -5296,6 +5339,122 @@ export interface components {
             user_count: number;
         };
         /**
+         * BuiltInGuardrailCatalog
+         * @description Every guardrail this gateway ships, whether or not it can currently run it.
+         */
+        BuiltInGuardrailCatalog: {
+            /** Guardrails */
+            guardrails?: components["schemas"]["BuiltInGuardrailSpec"][];
+        };
+        /**
+         * BuiltInGuardrailSpec
+         * @description One guardrail this gateway can construct and run itself.
+         */
+        BuiltInGuardrailSpec: {
+            /**
+             * Alternate Backends
+             * @description Other ways the same guardrail can run, where upstream offers a second path
+             */
+            alternate_backends?: ("local_encoder" | "local_decoder" | "hosted_api" | "library_wrapped" | "unknown")[];
+            /**
+             * Backend
+             * @description How it runs: a vendor API, a local model, or a wrapped library
+             * @enum {string}
+             */
+            backend: "local_encoder" | "local_decoder" | "hosted_api" | "library_wrapped" | "unknown";
+            /**
+             * Categories
+             * @description Everything it detects
+             */
+            categories?: ("prompt_injection" | "content_safety" | "toxicity" | "pii" | "hallucination" | "off_topic" | "bias" | "tool_use" | "general_judge" | "unknown")[];
+            /**
+             * Create Parameters
+             * @description Constructor arguments, which is where a vendor API key and an endpoint live
+             */
+            create_parameters?: components["schemas"]["GuardrailParameterSpec"][];
+            /**
+             * Default License
+             * @description The license covering the guardrail unless a variant says otherwise
+             */
+            default_license: string;
+            /**
+             * Description
+             * @description One line on what the guardrail checks
+             */
+            description: string;
+            /**
+             * Display Name
+             * @description The guardrail's own name, for a picker row
+             */
+            display_name: string;
+            /**
+             * Guardrail Name
+             * @description The any-guardrail class, and the name a stored guardrail selects
+             */
+            guardrail_name: string;
+            /**
+             * Missing Extra
+             * @description The Otari extra to install to make this runnable, when one would. Null when it already runs, and null for a guardrail this gateway holds no backend information about
+             */
+            missing_extra?: string | null;
+            /**
+             * Multilingual
+             * @description Whether it is trained or documented beyond English
+             */
+            multilingual: boolean;
+            /**
+             * Multimodal
+             * @description Whether it accepts more than text
+             */
+            multimodal: boolean;
+            /**
+             * Output Shapes
+             * @description The shapes of verdict it can return
+             */
+            output_shapes?: ("binary" | "multi_label" | "categorical" | "score" | "rubric" | "span")[];
+            /**
+             * Primary Category
+             * @description What it mainly detects, for grouping a picker
+             * @enum {string}
+             */
+            primary_category: "prompt_injection" | "content_safety" | "toxicity" | "pii" | "hallucination" | "off_topic" | "bias" | "tool_use" | "general_judge" | "unknown";
+            /**
+             * Requires Api Key
+             * @description Whether it calls a vendor that charges for the call
+             */
+            requires_api_key: boolean;
+            /**
+             * Runnable
+             * @description Whether every module this guardrail's backend needs is installed here. False is a missing package and not a broken guardrail
+             */
+            runnable: boolean;
+            /**
+             * Stages
+             * @description Which text it is meant to be run on
+             */
+            stages?: ("input" | "output" | "rag_context")[];
+            /**
+             * Supports Batch
+             * @description Whether several inputs run as one call
+             */
+            supports_batch: boolean;
+            /**
+             * Validate Parameters
+             * @description Per-call arguments, sent with the text on every check
+             */
+            validate_parameters?: components["schemas"]["GuardrailParameterSpec"][];
+            /**
+             * Variant Licenses
+             * @description Per-variant licenses, where a guardrail's models are not all under the default
+             */
+            variant_licenses?: components["schemas"]["GuardrailVariantLicense"][];
+            /**
+             * Vendor
+             * @description Who publishes the guardrail or the model behind it
+             */
+            vendor: string;
+        };
+        /**
          * CallToolResult
          * @description The server's response to a tool call.
          */
@@ -6673,6 +6832,22 @@ export interface components {
              * @description The name a guardrail entry puts in its profile field
              */
             profile: string;
+        };
+        /**
+         * GuardrailVariantLicense
+         * @description The license one model variant of a guardrail is served under.
+         */
+        GuardrailVariantLicense: {
+            /**
+             * License
+             * @description SPDX-style license id, for example apache-2.0 or llama-3.2
+             */
+            license: string;
+            /**
+             * Model Id
+             * @description The variant this license governs
+             */
+            model_id: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -17032,6 +17207,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "tool-settings-list_builtin_guardrails": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuiltInGuardrailCatalog"];
                 };
             };
         };
