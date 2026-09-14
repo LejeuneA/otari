@@ -352,6 +352,7 @@ def test_list_usage_response_shape(
         "cache_write_1h_tokens": None,
         "billing_meters": None,
         "pricing_breakdown": None,
+        "plugin_annotations": None,
         "cost": 1.23,
         "status": "error",
         "error_message": "capacity",

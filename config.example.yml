@@ -104,6 +104,7 @@ providers:
 # runs inside the gateway with everything the gateway can reach, so installing
 # through the API stays off until an operator turns it on here.
 # plugins:
+#   enabled: true               # off, nothing is discovered or imported
 #   directory: ./otari-plugins
 #   allow_install: false
 #   disabled: []

@@ -75,6 +75,7 @@ drops its version table too.
 
 ```yaml
 plugins:
+  enabled: true                  # off, nothing is discovered or imported (OTARI_PLUGINS_ENABLED)
   directory: ./otari-plugins     # drop-in plugins; where install and upload write (OTARI_PLUGINS_DIR)
   allow_install: false           # let the API and dashboard install (OTARI_PLUGINS_ALLOW_INSTALL)
   disabled: []                   # discovered plugins to leave unloaded
@@ -82,11 +83,12 @@ plugins:
     verified_index_url: https://raw.githubusercontent.com/mozilla-ai/otari-plugins/main/index.json
     github_topic: otari-plugin
     github_token: null           # raises the GitHub search rate limit
+  observer_timeout_ms: 250       # budget per traffic-observer call; see Watching traffic
   agent-gates:                   # a plugin's own settings, under its name
     ...
 ```
 
-Everything under `plugins:` that is not one of the four settings above is a
+Everything under `plugins:` that is not one of the six settings above is a
 plugin's own block, handed to that plugin as it is. The plugin documents what
 it accepts.
 
@@ -247,19 +249,24 @@ digest of the system prompt and first user turn when none is present.
 
 `on_request` runs before dispatch, after the input guardrails. `on_tool_call`
 runs for each tool call in the model's response, once the call is whole: a
-stream keeps flowing while a call's fragments are collected. Either method may
-be sync or async, and either may be omitted.
+stream keeps flowing while a call's fragments are collected. Only calls the
+client will run are offered; a tool the gateway runs itself (`otari_*` tools,
+MCP servers) is settled inside the tool loop and never reaches the response.
+Either method may be sync or async, and either may be omitted.
 
 What comes back is recorded, not applied. `annotations` from every observer are
 merged under the plugin's name into the usage row's `plugin_annotations`
 column and read back through the usage API; a `deny` is written there as
-`would_deny`. Enforcement, replacing a tool call or injecting a system
+`would_deny`. Annotations must be JSON; a plugin whose annotations are not is
+logged and left off the row. Hybrid mode writes no local usage row, so nothing
+is recorded there. Enforcement, replacing a tool call or injecting a system
 message, is a later phase and will keep this contract.
 
-Observers are fenced. One that raises is logged and skipped, one that runs
-past `plugins.observer_timeout_ms` (default 250) is cut off and skipped, and
-nothing runs at all when no plugin registered one. A plugin can slow a request
-by that budget per call, and no more.
+Observers are fenced. One that raises is logged and skipped, an async one that
+runs past `plugins.observer_timeout_ms` (default 250) is cut off and skipped,
+and nothing runs at all when no plugin registered one. A sync observer cannot
+be interrupted: it is logged when it overruns, so keep sync work short. An
+async plugin can slow a request by that budget per call, and no more.
 
 ## Getting listed
 

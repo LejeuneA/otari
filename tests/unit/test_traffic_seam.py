@@ -6,6 +6,7 @@ observer annotating the usage row of a real request) is in
 """
 
 import asyncio
+import datetime
 from typing import Any
 
 import pytest
@@ -280,6 +281,24 @@ async def test_a_slow_async_observer_is_cut_off_at_the_budget() -> None:
     await hooks.request()
 
     assert hooks.annotations == {}
+
+
+@pytest.mark.asyncio
+async def test_annotations_that_cannot_reach_the_json_column_are_skipped() -> None:
+    class WrongShape:
+        def on_request(self, event: RequestEvent) -> RequestDecision:
+            return RequestDecision(annotations=["not", "a", "dict"])  # type: ignore[arg-type]
+
+    class WrongValue:
+        def on_request(self, event: RequestEvent) -> RequestDecision:
+            return RequestDecision(annotations={"seen_at": datetime.datetime.now(tz=datetime.UTC)})
+
+    observers = TrafficObservers([("shape", WrongShape()), ("value", WrongValue()), ("gates", _Recorder())])
+    hooks = TrafficHooks(observers, CALLER, conversation())
+
+    await hooks.request()
+
+    assert set(hooks.annotations) == {"gates"}
 
 
 @pytest.mark.asyncio

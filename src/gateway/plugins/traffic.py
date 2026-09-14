@@ -7,9 +7,9 @@ again about every tool call the model produces (buffered per call while a
 stream flows), and writes whatever the observers annotated onto the usage row.
 
 Every observer call is fenced: an exception is logged with the plugin's name
-and skipped, a call that outlives ``plugins.observer_timeout_ms`` is cancelled
-and skipped, and nothing at all runs when no plugin registered an observer. A
-plugin can therefore never fail or slow a request beyond the budget.
+and skipped, an async call that outlives ``plugins.observer_timeout_ms`` is
+cancelled and skipped (a sync one cannot be interrupted, so an overrun is
+logged instead), and nothing at all runs when no plugin registered an observer.
 
 Decisions (a system text to inject, a tool call to deny) are recorded in this
 phase and not applied; the ``annotations`` are what reach the usage row.
@@ -192,6 +192,16 @@ class TrafficHooks:
 
     def _merge(self, name: str, annotations: dict[str, Any]) -> None:
         if not annotations:
+            return
+        # The row's column is JSON, and the writer drops the whole batch it is in
+        # when one value cannot be serialized; refuse here, per plugin, instead.
+        if not isinstance(annotations, dict):
+            logger.warning("Plugin %s: annotations must be a dict, got %s; skipped", name, type(annotations).__name__)
+            return
+        try:
+            json.dumps(annotations)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Plugin %s: annotations are not JSON-serializable and were skipped: %s", name, exc)
             return
         current = self.annotations.setdefault(name, {})
         for key, value in annotations.items():

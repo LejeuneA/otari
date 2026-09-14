@@ -1,7 +1,7 @@
 """add plugin_annotations to usage_logs
 
 Revision ID: b7d2e4f6a8c0
-Revises: f1c4a8e2d6b9
+Revises: a1d4f7c2e8b3
 Create Date: 2026-09-10
 
 What plugin traffic observers annotated on a request, keyed by plugin name.

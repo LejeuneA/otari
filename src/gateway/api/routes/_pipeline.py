@@ -2490,7 +2490,10 @@ async def _observe_request(ctx: RequestContext, conversation: Conversation | Non
         organization_id=str(ctx.organization_id) if ctx.organization_id else None,
     )
     ctx.traffic = TrafficHooks(observers, caller, conversation)
-    await ctx.traffic.request()
+    try:
+        await ctx.traffic.request()
+    except Exception:  # noqa: BLE001 the seam's promise: a plugin cannot fail a request
+        logger.exception("Plugin traffic observers failed on the request; continuing without their answer")
 
 
 async def prepare_gateway_tools(
