@@ -19,7 +19,7 @@ import { useDirtySnapshot } from "@/design-system/forms/useDirtySnapshot"
 import { Badge } from "@/design-system/indicators/Badge"
 import { SettingsGroup } from "@/design-system/layout/SettingsGroup"
 import { FilterSelect } from "@/design-system/navigation/FilterSelect"
-import { canManage } from "@/features/organization/roles"
+import { canManage, isDeploymentOperator } from "@/features/organization/roles"
 import { GuardrailParametersSection } from "@/features/tools/GuardrailParametersSection"
 import { GuardrailProfileField } from "@/features/tools/GuardrailProfileField"
 import {
@@ -32,6 +32,7 @@ import { useOrganizationContext } from "@/shared/api/organizations"
 import {
   useCreateOrganizationGuardrail,
   useDeleteOrganizationGuardrail,
+  useGuardrailCredentials,
   useGuardrailProfiles,
   useOrganizationGuardrails,
   useUpdateOrganizationGuardrail,
@@ -421,6 +422,7 @@ function AddGuardrailDialog({
   onClose,
   catalog,
   catalogPending,
+  localNames,
   workspaces,
   onSaved,
 }: {
@@ -428,6 +430,8 @@ function AddGuardrailDialog({
   onClose: () => void
   catalog: GuardrailCatalog | undefined
   catalogPending: boolean
+  /** Guardrails defined in this gateway, whose names a profile may also be. */
+  localNames: readonly string[]
   workspaces: readonly Workspace[]
   onSaved: (message: string) => void
 }) {
@@ -510,6 +514,7 @@ function AddGuardrailDialog({
         catalog={catalog}
         pending={catalogPending}
         value={profile}
+        localNames={localNames}
         onChange={setProfile}
       />
       <Select
@@ -581,6 +586,12 @@ export function OrganizationGuardrailsCard({
   // Behind the same gate for the same reason the entries are: nothing here is
   // asked for over a form the caller cannot use.
   const catalog = useGuardrailProfiles(manages)
+  // The names a guardrail defined in this gateway publishes, which a profile may
+  // also be. Operator-only, so an organization owner who is not one reads none
+  // and keeps the by-hand box; asking anyway would earn a 403 per open.
+  const localGuardrails = useGuardrailCredentials(
+    isDeploymentOperator(context.data),
+  )
   const workspaces = useWorkspaces()
   const [adding, setAdding] = useState(false)
   // Bumped on every open and used as the dialog's key, so the draft is cleared
@@ -592,6 +603,9 @@ export function OrganizationGuardrailsCard({
   }
   const entries = guardrails.data ?? []
   const known = workspaces.data ?? []
+  const localNames = (localGuardrails.data?.stored ?? [])
+    .filter((row) => row.enabled)
+    .map((row) => row.name)
 
   return (
     <>
@@ -610,6 +624,7 @@ export function OrganizationGuardrailsCard({
           // pending when its observers remount, which would leave the picker
           // stuck reading a service that already answered.
           catalogPending={!catalog.isFetched}
+          localNames={localNames}
           workspaces={known}
           onSaved={onSaved}
         />
