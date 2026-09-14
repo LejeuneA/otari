@@ -132,6 +132,72 @@ the dashboard falls back to naming a profile by hand. The same fallback covers
 an entry that points at an endpoint of its own: only `guardrails_url` is read
 here, because a URL taken from an entry would be one a caller chose.
 
+### Defining a guardrail Otari runs itself
+
+Otari can also build a guardrail and run it in its own process, with no second
+container. A guardrail defined this way is a row Otari owns rather than an entry
+in a file the guardrails service reads, so adding one takes no restart.
+
+`GET /api/v1/tool-settings/guardrails/catalog` lists every guardrail this build
+ships, with both stages of arguments: `create` for the constructor, where a
+vendor API key lives, and `validate` for the per-call ones. A guardrail whose
+packages are not installed reports `runnable: false` and names the extra that
+would fix it.
+
+`POST /api/v1/guardrail-credentials` defines one. It is operator-only and
+standalone-only, so a hosted or hybrid deployment does not serve it. The name is
+what a request sends as its `profile`:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/guardrail-credentials \
+  -H "Otari-Key: Bearer $OTARI_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "prompt-injection",
+    "guardrail_name": "lakera_guard",
+    "create_kwargs": {"api_key": "lakera-live-..."}
+  }'
+```
+
+Send the constructor arguments as one `create_kwargs` map. Otari splits it:
+whatever the catalog marks as a credential is encrypted with `OTARI_SECRET_KEY`
+and never returned, and the rest is stored as written. A read gives back the
+plain arguments plus a `create_secrets` map showing which secrets are set:
+
+```json
+{
+  "name": "prompt-injection",
+  "guardrail_name": "lakera_guard",
+  "create_kwargs": {},
+  "create_secrets": {"api_key": "***"},
+  "enabled": true,
+  "decryptable": true
+}
+```
+
+To edit one, `PATCH /api/v1/guardrail-credentials/{name}` with the whole
+`create_kwargs` map. Send a secret back as `"***"` to keep it, a new value to
+rotate it, or leave it out to remove it. `POST /{name}/test` runs the guardrail
+once against a sample input, so a definition can be checked before anything
+relies on it, including one that is not enabled yet.
+
+A few arguments cannot be stored. Upstream lets a caller pass an already-built
+client object for `boto3_session` or `api_client`, and no database can hold a
+live connection, so those are refused. Use the credential arguments beside them
+instead: `aws_access_key_id` and `aws_secret_access_key` for Bedrock, `api_key`
+and `url` for watsonx.
+
+The same guardrails can be written into `config.yml` as a read-only baseline; see
+[Configuration](configuration.md). A stored guardrail wins over a file entry of
+the same name. In hybrid mode the file is the only source, because a hybrid
+gateway keeps no local database.
+
+Rotating `OTARI_SECRET_KEY` works the same way it does for providers: set it to
+`new,old`, restart, call `POST /api/v1/guardrail-credentials/reencrypt` alongside
+the provider and search-tool endpoints, then drop the old key and restart again.
+A guardrail whose secrets no longer decrypt is reported with
+`"decryptable": false` rather than looking like one with no secrets at all.
+
 ### How the layers compose
 
 Three layers can name a guardrail: the caller's request, the caller's
