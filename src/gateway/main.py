@@ -29,6 +29,11 @@ from gateway.services.budget_reservation_ledger import run_reservation_sweeper
 from gateway.services.dashboard_session_service import revoke_sessions_on_master_key_change
 from gateway.services.file_store import build_file_store
 from gateway.services.guardrail_runner import reset_guardrail_runner
+from gateway.services.guardrail_store_service import (
+    load_guardrails_at_startup,
+    reset_guardrail_cache,
+    run_guardrail_refresher,
+)
 from gateway.services.log_writer import LogWriter, NoopLogWriter, create_log_writer
 from gateway.services.master_key_service import ensure_master_key
 from gateway.services.model_catalog_service import (
@@ -346,6 +351,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
         provider_refresher: asyncio.Task[None] | None = None
         org_provider_refresher: asyncio.Task[None] | None = None
         search_tool_refresher: asyncio.Task[None] | None = None
+        guardrail_refresher: asyncio.Task[None] | None = None
         price_refresher: asyncio.Task[None] | None = None
         discovery_refresher: asyncio.Task[None] | None = None
         catalog_refresher: asyncio.Task[None] | None = None
@@ -395,6 +401,11 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                 # (workspace_id, provider) rather than instance name. Empty on
                 # a fresh database (no workspace or key exists yet), the same
                 # posture load_providers_at_startup takes.
+                # Guardrail definitions are the provider overlay's shape with one
+                # difference: nothing is written back to config.guardrails, so
+                # this primes a cache the request path merges the config block
+                # under rather than a config map it rebuilds.
+                await load_guardrails_at_startup(session, config)
                 await load_org_provider_keys_at_startup(session)
                 await bootstrap_first_api_key(config, session)
                 await initialize_pricing_from_config(config, session)
@@ -426,6 +437,12 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             # reads config.search_tools synchronously, so the overlay is reloaded
             # on a TTL to converge sibling workers and replicas after a write.
             search_tool_refresher = asyncio.create_task(run_search_tool_refresher(config))
+            # Guardrail definitions are read synchronously on the request path,
+            # so the overlay is reloaded on a TTL like the rest. It does a second
+            # job here: a sibling worker that picks up an edited definition
+            # re-keys the profile, and the runner then releases the instance the
+            # old arguments had built, model weights included.
+            guardrail_refresher = asyncio.create_task(run_guardrail_refresher())
             # An accepted pricing snapshot is applied in-memory by the worker that
             # served the confirm; reload it on a TTL so sibling workers and replicas
             # converge, the same way aliases and provider credentials do.
@@ -479,6 +496,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                 (provider_refresher, "provider"),
                 (org_provider_refresher, "organization provider key"),
                 (search_tool_refresher, "search tool"),
+                (guardrail_refresher, "guardrail"),
                 (price_refresher, "price snapshot"),
                 (discovery_refresher, "model discovery"),
                 (catalog_refresher, "models.dev catalog"),
@@ -495,6 +513,8 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                 reset_org_provider_cache()
             if search_tool_refresher is not None:
                 reset_search_tool_cache()
+            if guardrail_refresher is not None:
+                reset_guardrail_cache()
             if discovery_refresher is not None:
                 reset_discovery_cache()
             if catalog_refresher is not None:

@@ -25,8 +25,11 @@ from any_llm.types.completion import (
     CompletionUsage,
 )
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlmodel import Session
 
 from gateway.core.config import API_ROOT, GatewayConfig
+from gateway.models.entities import GuardrailCredential
 from gateway.services.guardrail_runner import reset_guardrail_runner
 from gateway.services.guardrail_store_service import reset_guardrail_cache
 
@@ -314,3 +317,119 @@ def test_an_in_process_failure_fails_open_when_the_entry_says_so(
     assert response.status_code == 200
     provider.assert_awaited_once()
     assert '"valid":null' in response.headers["X-Otari-Guardrails"]
+
+
+# --------------------------------------------------------------------------- #
+# A stored definition, loaded at startup
+# --------------------------------------------------------------------------- #
+
+
+def _store_guardrail(postgres_url: str, *, name: str = _PROFILE, enabled: bool = True) -> None:
+    """Write a row straight to the database, before any app boots.
+
+    Deliberately not through the API: that path refreshes the overlay itself, so
+    it would pass even with no startup load registered. Writing behind the app is
+    what makes this a test of the lifespan.
+    """
+    engine = create_engine(postgres_url)
+    with Session(engine) as session:
+        session.add(
+            GuardrailCredential(
+                name=name,
+                guardrail_name="lakera_guard",
+                create_kwargs={"api_key": "stored-key"},
+                validate_kwargs={},
+                enabled=enabled,
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+
+def test_a_stored_guardrail_blocks_a_flagged_input_with_no_service(
+    postgres_url: str, clean_database: None, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Success criterion: a stored block profile refuses a flagged input.
+
+    No guardrails container, and the row was written before the app booted, so
+    the only thing that can have found it is the startup load.
+    """
+    _store_guardrail(postgres_url)
+    _stub_any_guardrail(monkeypatch, valid=False)
+    provider = _stub_provider(monkeypatch)
+
+    for client in build_test_client(_config(postgres_url)):
+        headers = _api_key(client, master_key_header)
+        response = _ask(client, headers, _FLAGGED)
+
+        assert response.status_code == 403
+        assert response.json()["detail"]["code"] == "guardrail_violation"
+        provider.assert_not_awaited()
+
+
+def test_a_stored_guardrail_serves_a_benign_input(
+    postgres_url: str, clean_database: None, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _store_guardrail(postgres_url)
+    _stub_any_guardrail(monkeypatch, valid=True)
+    provider = _stub_provider(monkeypatch)
+
+    for client in build_test_client(_config(postgres_url)):
+        headers = _api_key(client, master_key_header)
+        response = _ask(client, headers, _BENIGN)
+
+        assert response.status_code == 200
+        provider.assert_awaited_once()
+        assert '"valid":true' in response.headers["X-Otari-Guardrails"]
+
+
+def test_a_disabled_stored_row_shadows_the_config_guardrail_it_collides_with(
+    postgres_url: str, clean_database: None, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switching a stored guardrail off must not resume the file's one.
+
+    The config entry may have been written from different arguments, and the
+    management API already reports it as shadowed whatever the row's `enabled`
+    says. So the name stays the row's, nothing runs, and a `block` entry fails
+    closed rather than quietly serving an unchecked request.
+    """
+    _store_guardrail(postgres_url, enabled=False)
+    _stub_any_guardrail(monkeypatch, valid=False)
+    provider = _stub_provider(monkeypatch)
+
+    for client in build_test_client(_config(postgres_url, **{_PROFILE: _entry()})):
+        headers = _api_key(client, master_key_header)
+        response = _ask(client, headers, _FLAGGED)
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == f"guardrail profile '{_PROFILE}' could not be evaluated"
+        provider.assert_not_awaited()
+
+
+def test_a_stored_row_wins_over_a_config_guardrail_of_the_same_name(
+    postgres_url: str, clean_database: None, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Which arguments the guardrail was built from is the observable difference."""
+    _store_guardrail(postgres_url)
+    built: list[dict[str, Any]] = []
+
+    def _create(_name: object, **kwargs: object) -> object:
+        built.append(dict(kwargs))
+        return object()
+
+    class _Output:
+        valid = True
+        explanation = None
+        score = None
+
+    class _Stub:
+        create = staticmethod(_create)
+        evaluate = staticmethod(lambda *_a, **_k: _Output())
+
+    monkeypatch.setattr("gateway.services.guardrail_runner.AnyGuardrail", _Stub)
+    _stub_provider(monkeypatch)
+
+    for client in build_test_client(_config(postgres_url, **{_PROFILE: _entry(api_key="from-file")})):
+        headers = _api_key(client, master_key_header)
+        assert _ask(client, headers, _BENIGN).status_code == 200
+        assert built == [{"api_key": "stored-key"}]
