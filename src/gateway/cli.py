@@ -2,6 +2,7 @@ import logging
 import re
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 import uvicorn
@@ -10,6 +11,10 @@ from uvicorn.config import logger
 from gateway.core.config import API_ROOT, load_config
 from gateway.log_config import setup_logger
 from gateway.main import create_app
+
+if TYPE_CHECKING:
+    from gateway.container import MigrationContribution
+    from gateway.core.config import GatewayConfig
 
 _LOG_LEVEL_NAMES: dict[str, int] = {
     "DEBUG": logging.DEBUG,
@@ -150,12 +155,30 @@ def serve(
         sys.exit(0)
 
 
+def _contributed_chains(gateway_config: "GatewayConfig") -> tuple["MigrationContribution", ...]:
+    """The Alembic chains the configured bootstrap contributes.
+
+    A selector that cannot load is the operator's typo, not a bug, so it is
+    reported as a message and not as a traceback out of ``build_container``.
+    """
+    from gateway.container import BootstrapError, build_container
+
+    try:
+        return build_container(gateway_config.bootstrap).migration_contributions()
+    except BootstrapError as error:
+        click.echo(f"Could not load the configured bootstrap: {error}", err=True)
+        sys.exit(1)
+
+
 @cli.command()
 @click.option("--config", "-c", type=click.Path(exists=True), help="Path to config YAML file")
 @click.option("--database-url", envvar="DATABASE_URL", help="Database connection URL")
 def init_db(config: str | None, database_url: str | None) -> None:
-    """Initialize the database schema."""
-    from gateway.container import build_container
+    """Initialize the database schema.
+
+    Runs nothing unless ``auto_migrate`` is on; ``otari migrate`` is the
+    command for a deployment that migrates out of band.
+    """
     from gateway.db import init_db as db_init
 
     gateway_config = load_config(config)
@@ -168,7 +191,7 @@ def init_db(config: str | None, database_url: str | None) -> None:
     # From the container, so a bootstrap's chains are part of the schema this
     # creates, exactly as they are at boot. Built here rather than passed in
     # because the CLI has no app to take one from.
-    db_init(gateway_config, migration_contributions=build_container(gateway_config.bootstrap).migration_contributions())
+    db_init(gateway_config, migration_contributions=_contributed_chains(gateway_config))
 
     click.echo("Database initialized successfully!")
 
@@ -185,7 +208,6 @@ def migrate(config: str | None, database_url: str | None, revision: str) -> None
     deployment with ``auto_migrate`` off has, so it has to reach a plugin's
     tables as well: no other command creates them.
     """
-    from gateway.container import build_container
     from gateway.core.database import run_migrations
 
     gateway_config = load_config(config)
@@ -197,8 +219,10 @@ def migrate(config: str | None, database_url: str | None, revision: str) -> None
         click.echo(f"Invalid revision format: {revision}", err=True)
         sys.exit(1)
 
-    contributions = build_container(gateway_config.bootstrap).migration_contributions()
-    if contributions and revision != "head":
+    contributions = _contributed_chains(gateway_config)
+    # ``heads`` names the same target as ``head`` here, since Otari's chain is
+    # single-headed and a script checks that it stays so.
+    if contributions and revision not in {"head", "heads"}:
         # A target revision names one in Otari's chain, which a contributed
         # history knows nothing about. Pinning core is a deliberate act, so the
         # plugin chains are left where they are rather than taken to their own

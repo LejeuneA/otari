@@ -140,22 +140,13 @@ class MigrationContribution:
     histories never interleave. ``init_db`` runs Otari's chain to ``head``
     first, then each contribution's, on the same database URL.
 
-    The contract for the contributed ``env.py``: Otari passes the database URL
-    both as ``sqlalchemy.url`` and as ``config.attributes["database_url"]``, and
-    passes the declared table name as ``config.attributes["version_table"]``.
-    Prefer the attribute for the URL: ``sqlalchemy.url`` is stored in a
-    configparser, so Otari escapes a percent sign on the way in and the chain
-    gets the URL back only through interpolation, while the attribute holds it
-    verbatim. The ``version_table`` attribute is
-    offered, not required: a chain may read it, or may hardcode a constant of
-    its own. What Otari requires is that the ``version_table`` declared on the
-    contribution is the table the chain actually stamps, because Otari uses the
-    declared value only to refuse a collision with core's ``alembic_version``
-    and with another contribution. A contributed chain must not
-    reference a core table by foreign key in a way that would block a core
-    migration: the core chain runs first and knows nothing about contributed
-    tables, so a core revision that drops or rebuilds a table the contribution
-    points at fails on a constraint the core chain did not create.
+    The contract for the contributed ``env.py`` is in
+    ``docs/configuration.md`` ("Contributing a migration chain"), which is
+    canonical: what Otari puts on the Alembic config, which channel to read the
+    URL from, and the foreign-key caution. What matters here is that the
+    ``version_table`` declared on the contribution is the table the chain
+    actually stamps, because Otari uses the declared value only to refuse a
+    collision with core's ``alembic_version`` and with another contribution.
 
     ``name`` identifies the chain in the startup log and in errors; it is
     unique among contributions, as is ``version_table``.

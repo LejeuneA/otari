@@ -98,12 +98,19 @@ def escape_ini_value(value: str) -> str:
 
 
 def _alembic_config(script_location: str, database_url: str) -> Config:
+    # Alembic builds a synchronous engine, so the async form an operator may
+    # configure (the README's own sqlite+aiosqlite:///, or postgresql+asyncpg://)
+    # is converted here, once, for every chain. Otari's env.py also converts what
+    # it reads, and the conversion is idempotent; a contributed env.py has no
+    # reason to know it must, and one that did not died in connect().
+    database_url = to_sync_url(database_url)
     alembic_cfg = Config()
     alembic_cfg.set_main_option("script_location", escape_ini_value(script_location))
     alembic_cfg.set_main_option("sqlalchemy.url", escape_ini_value(database_url))
     # The same URL on two channels. Otari's own env.py reads the main option,
     # which is why that write is escaped; a contributed chain is expected to
-    # prefer the attribute, which is stored raw and so needs no unescaping.
+    # prefer the attribute, which is stored unescaped and so needs no
+    # interpolation to read back.
     alembic_cfg.attributes["database_url"] = database_url
     alembic_cfg.attributes["configure_logger"] = False
     return alembic_cfg
@@ -126,15 +133,10 @@ def run_migrations(
     a history of its own and is always taken to its head, so a caller pinning
     core to an older revision passes no contributions.
 
-    Every chain runs against the same URL, offered both as ``sqlalchemy.url``
-    and as ``config.attributes["database_url"]``. A contributed chain keeps its
-    history in the version table its contribution names, offered to its
-    ``env.py`` as ``config.attributes["version_table"]``; that script may read
-    the attribute or hardcode a constant of its own, so long as the table it
-    stamps is the one the contribution declared, since the declared value is
-    what the container checks for collisions. Otari's own ``env.py`` reads no
-    such attribute and stays on Alembic's default table, so the histories never
-    share a row.
+    Every chain runs against the same URL, in its synchronous form, on the two
+    channels ``docs/configuration.md`` documents. Otari's own ``env.py`` stays
+    on Alembic's default version table and a contribution stamps the one it
+    declared, so the histories never share a row.
     """
     alembic_dir = Path(__file__).resolve().parents[3] / "alembic"
     command.upgrade(_alembic_config(str(alembic_dir), database_url), revision)
@@ -316,14 +318,8 @@ def init_db(config: GatewayConfig, *, migration_contributions: Iterable[Migratio
     ``gateway.container.MigrationContribution``). ``otari migrate`` and
     ``otari init-db`` run the same chains, from the same container.
 
-    Each contributed chain is handed the database URL both as
-    ``sqlalchemy.url`` and as ``config.attributes["database_url"]``, and its
-    declared version table as ``config.attributes["version_table"]``. Reading
-    that attribute is optional: a contributed ``env.py`` may hardcode its own
-    constant instead. What matters is that the table it stamps is the one its
-    contribution declared, because the declared value is all Otari has when it
-    refuses a collision with core's ``alembic_version`` or with another
-    contribution.
+    The channels a contributed ``env.py`` reads, and what it owes in return,
+    are documented in ``docs/configuration.md``.
     """
 
     global _engine, _SessionLocal, _log_engine, _LogSessionLocal  # noqa: PLW0603

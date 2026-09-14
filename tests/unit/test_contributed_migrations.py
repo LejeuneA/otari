@@ -161,3 +161,31 @@ def test_a_url_carrying_a_percent_sign_survives_both_channels() -> None:
     assert config.get_main_option("sqlalchemy.url") == url
     assert config.get_section("alembic", {})["sqlalchemy.url"] == url
     assert config.attributes["database_url"] == url
+
+
+def test_a_contributed_chain_runs_on_the_async_url_form(tmp_path: Path) -> None:
+    """The README configures ``sqlite+aiosqlite:///``, and Alembic builds a sync engine.
+
+    Otari's own ``env.py`` converts what it reads, so the core chain always ran;
+    a contributed ``env.py`` has no reason to know it must, and one that built an
+    engine straight from the URL died in ``connect()`` with ``MissingGreenlet``.
+    The conversion now happens once, for every chain, in ``_alembic_config``.
+    """
+    url = f"sqlite+aiosqlite:///{tmp_path / 'async-form.db'}"
+
+    init_db(GatewayConfig(database_url=url, auto_migrate=True), migration_contributions=(PLUGIN,))
+    reset_db()
+
+    sync_url = f"sqlite:///{tmp_path / 'async-form.db'}"
+    tables = _tables(sync_url)
+    assert "plugin_demo" in tables
+    assert {"alembic_version", PLUGIN.version_table} <= tables
+    assert _version_rows(sync_url, PLUGIN.version_table) == [_head(_PLUGIN_ALEMBIC)]
+
+
+def test_both_url_channels_carry_the_sync_form() -> None:
+    """Including the password, which must survive the conversion untouched."""
+    config = _alembic_config("/somewhere", "postgresql+asyncpg://user:p%40ss@host/db")
+
+    assert config.attributes["database_url"] == "postgresql://user:p%40ss@host/db"
+    assert config.get_main_option("sqlalchemy.url") == "postgresql://user:p%40ss@host/db"

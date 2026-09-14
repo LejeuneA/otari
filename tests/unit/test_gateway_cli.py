@@ -205,6 +205,31 @@ def test_migrate_to_a_pinned_revision_leaves_the_contributed_chains_alone(
     assert "leaving the contributed chains alone" in result.output
 
 
+def test_migrate_to_heads_still_runs_the_contributed_chains(migration_stubs: MigrationCapture) -> None:
+    """``heads`` names the same target as ``head``: Otari's chain is single-headed."""
+    result = CliRunner().invoke(gateway_cli.cli, ["migrate", "--revision", "heads"])
+
+    assert result.exit_code == 0, result.output
+    assert migration_stubs.chains == ("demo",)
+
+
+def test_migrate_reports_a_bad_bootstrap_selector_instead_of_a_traceback(
+    migration_stubs: MigrationCapture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selector that cannot load is the operator's typo, not a bug."""
+    monkeypatch.setattr(
+        gateway_cli,
+        "load_config",
+        lambda config_path=None: GatewayConfig(master_key="k", bootstrap="no_such_module:register"),
+    )
+
+    result = CliRunner().invoke(gateway_cli.cli, ["migrate"])
+
+    assert result.exit_code == 1
+    assert "Could not load the configured bootstrap" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_migrate_reports_a_failed_chain_instead_of_a_traceback(
     migration_stubs: MigrationCapture, monkeypatch: pytest.MonkeyPatch
 ) -> None:

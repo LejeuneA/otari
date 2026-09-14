@@ -407,7 +407,10 @@ database URL travels on two channels, `sqlalchemy.url` and
 `config.attributes["database_url"]`, and a contributed chain should prefer the
 attribute: `sqlalchemy.url` is stored in a configparser, so Otari escapes a
 percent sign on the way in and the chain gets the URL back only through
-interpolation, while the attribute holds it verbatim. The declared version
+interpolation, while the attribute needs none. Both channels carry the URL in
+its synchronous form: Alembic builds a synchronous engine, so an async URL
+(`sqlite+aiosqlite://`, `postgresql+asyncpg://`) is converted once before
+either is written, and a contributed `env.py` does not have to know to do it. The declared version
 table travels as
 `config.attributes["version_table"]`.
 
@@ -437,12 +440,13 @@ chain did not create. Prefer plain indexed id columns over enforced foreign
 keys into core tables. And hybrid mode skips database initialization entirely,
 contributed chains included, since it has no local database.
 
-`otari migrate` and `otari init-db` run the same chains from the same
-container, so a deployment that migrates out of band gets a plugin's tables
-without doing anything extra. `otari migrate --revision` is the exception: a
-revision names one in Otari's own chain, which a contributed history knows
-nothing about, so pinning core leaves the contributed chains where they are and
-the command says so.
+`otari migrate` is the command for a deployment that migrates out of band. It
+reads the chains from the same container the boot path uses, so a plugin's
+tables come with it. (`otari init-db` reads the same container, but it runs no
+chain at all unless `auto_migrate` is on, Otari's own included.) Pinning
+`--revision` is the exception: a revision names one in Otari's own chain, which
+a contributed history knows nothing about, so the contributed chains are left
+where they are and the command says so.
 
 Contributed chains run under Otari's existing `auto_migrate` gate and get no
 knob of their own. Setting `auto_migrate` to true is already a deployment's
