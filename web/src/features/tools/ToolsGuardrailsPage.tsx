@@ -11,6 +11,7 @@ import { PageIntro } from "@/design-system/layout/PageIntro"
 import { CONTROL_LANE } from "@/design-system/layout/SettingRow"
 import { SettingsGroup } from "@/design-system/layout/SettingsGroup"
 import { isDeploymentOperator } from "@/features/organization/roles"
+import { LocalGuardrailsCard } from "@/features/tools/LocalGuardrailsCard"
 import { OrganizationGuardrailsCard } from "@/features/tools/OrganizationGuardrailsCard"
 import { SearchToolsCard } from "@/features/tools/SearchToolsCard"
 import type { FieldCopy } from "@/features/tools/ToolSettingRows"
@@ -462,8 +463,22 @@ export function ToolsGuardrailsPage({ only }: { only?: ToolServiceName } = {}) {
                 docsHref={toolsDocs("per-workspace-code-policy")}
               />
             ) : null}
+            {/* Above the mandates, in the order the two are decided: a
+                guardrail has to exist before an organization can require it,
+                and the name defined here is what a mandate's profile names.
+                Operator-only, like the search tools above: its rows are the
+                deployment's own credentials. */}
             {service.key === "guardrails" ? (
-              <OrganizationGuardrailsCard onSaved={showToast} />
+              <>
+                {isOperator ? (
+                  <LocalGuardrailsCard
+                    docsHref={toolsDocs(
+                      "defining-a-guardrail-otari-runs-itself",
+                    )}
+                  />
+                ) : null}
+                <OrganizationGuardrailsCard onSaved={showToast} />
+              </>
             ) : null}
           </Fragment>
         )
