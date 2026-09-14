@@ -243,3 +243,20 @@ def test_a_hybrid_config_still_carries_the_block(tmp_path: Path, monkeypatch: py
 
     assert config.is_hybrid_mode
     assert config.guardrails["prompt-injection"]["guardrail_name"] == "lakera_guard"
+
+
+def test_a_secret_that_cannot_be_written_down_is_refused(tmp_path: Path) -> None:
+    """``boto3_session`` wants a live object, which YAML cannot express either.
+
+    Refused rather than passed through, because boto3 would be handed a mapping
+    where it expects a session and the failure would surface as an opaque vendor
+    error on the first request.
+    """
+    with pytest.raises(ValueError, match="guardrails.aws.create_kwargs.boto3_session cannot be stored"):
+        load_config(
+            _config_file(
+                tmp_path,
+                "guardrails:\n  aws:\n    guardrail_name: bedrock_guardrails\n"
+                "    create_kwargs: {guardrail_identifier: gr-1, boto3_session: {region: us-east-1}}\n",
+            )
+        )
