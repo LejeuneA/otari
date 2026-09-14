@@ -58,6 +58,15 @@ class EventBus:
     def __bool__(self) -> bool:
         return bool(self._handlers)
 
+    def remove_plugin(self, plugin: str) -> None:
+        """Drop every handler ``plugin`` subscribed, for a plugin withdrawn after load."""
+        for name, handlers in list(self._handlers.items()):
+            kept = [(owner, handler) for owner, handler in handlers if owner != plugin]
+            if kept:
+                self._handlers[name] = kept
+            else:
+                del self._handlers[name]
+
     def handlers_for(self, name: str) -> list[tuple[str, Handler]]:
         return [*self._handlers.get(name, []), *self._handlers.get("*", [])]
 

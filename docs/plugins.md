@@ -85,7 +85,8 @@ plugins:
     github_token: null           # raises the GitHub search rate limit
   observer_timeout_ms: 250       # budget per traffic-observer call
   event_timeout_ms: 5000         # budget per event handler, off the request path
-  hook_timeout_ms: 30000         # budget per startup, shutdown, or health hook
+  hook_timeout_ms: 30000         # budget per startup or shutdown hook
+  health_timeout_ms: 5000        # budget per health check when /health asks; the report is held ten seconds
   agent-gates:                   # a plugin's own settings, under its name
     judge_timeout_seconds: 120
 ```
@@ -93,7 +94,9 @@ plugins:
 Everything under `plugins:` that is not one of the settings above is a
 plugin's own block. The keys a plugin types in its manifest are checked
 against it and rendered as a form on the plugin's card in the Marketplace,
-where an operator can change them without a restart; a value set there wins
+where an operator can change them without a restart (the worker that took the
+change applies it at once, the others on their next start, as with the gateway's
+own runtime overrides); a value set there wins
 over `config.yml`, the way the gateway's own runtime overrides do. Untyped keys
 are handed to the plugin as they are, and the plugin documents them.
 
@@ -291,7 +294,8 @@ runtime overrides do.
   all. Handlers run as tasks off the request path, each cut off at
   `plugins.event_timeout_ms` and fenced by a `try`, so a notifier that is slow
   or broken never delays or fails a response. `event.payload` carries ids and
-  numbers, never request or response content.
+  numbers, plus whatever observers annotated on a usage row; it carries no
+  request or response text of the gateway's own.
 - **Guardrail backends.** `ctx.add_guardrail(name, backend)` offers a profile
   named `<plugin>:<name>` that a request, an organization entry, or a routing
   policy names like any service profile, and that gets block or monitor,

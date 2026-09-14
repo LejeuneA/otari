@@ -90,7 +90,9 @@ topic on GitHub. An operator installs one from there or uploads an archive once
 `plugins.allow_install` is on, and a restart applies it; an unverified install
 asks for the repository name to be typed first, because a plugin runs inside
 the gateway with everything the gateway can reach. A plugin that ships a page
-gets a row of its own under Extend, framed inside the dashboard.
+gets a row of its own, framed inside the dashboard, where its manifest places
+it: at the end of a section, or nested under Tools or Routing, and for members
+as well as operators when it says so.
 
 The organization view contains tenant-wide administration:
 

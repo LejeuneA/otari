@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -435,8 +436,8 @@ async def test_a_failing_plugin_backend_follows_the_mode_contract() -> None:
 def test_settings_writes_are_validated_against_the_manifest() -> None:
     manifest = parse_manifest(
         _manifest(
-            "[plugin.settings.timeout]\ntype = \"int\"\ndefault = 30\n"
-            "[plugin.settings.token]\ntype = \"str\"\nsecret = true\neditable = false"
+            '[plugin.settings.timeout]\ntype = "int"\ndefault = 30\n'
+            '[plugin.settings.token]\ntype = "str"\nsecret = true\neditable = false'
         )
     )
     assert validate_plugin_settings(manifest, {"timeout": 5}) == {"timeout": 5}
@@ -707,3 +708,120 @@ async def test_the_responses_stream_gate_replaces_a_denied_item() -> None:
         "response": {"output": [{"type": "function_call", "call_id": "f1", "name": "shell", "arguments": "{}"}]},
     }
     assert (await gate.feed(completed, _judge))[0]["response"]["output"][0].type == "message"
+
+
+@pytest.mark.asyncio
+async def test_the_chat_stream_gate_renumbers_the_survivors_of_a_partial_denial() -> None:
+    gate = ChatStreamGate()
+    denied_call = ChoiceDeltaToolCall(
+        index=0, id="c0", function=ChoiceDeltaToolCallFunction(name="Bash", arguments='{"command": "git push --force"}')
+    )
+    allowed_call = ChoiceDeltaToolCall(
+        index=1, id="c1", function=ChoiceDeltaToolCallFunction(name="Bash", arguments='{"command": "ls"}')
+    )
+    assert await gate.feed(_chunk(ChoiceDelta(tool_calls=[denied_call])), _judge) == []
+    assert await gate.feed(_chunk(ChoiceDelta(tool_calls=[allowed_call])), _judge) == []
+
+    out = await gate.feed(_chunk(ChoiceDelta(), "tool_calls"), _judge)
+
+    fragments = [raw for chunk in out for choice in chunk.choices for raw in (choice.delta.tool_calls or [])]
+    # The survivor moves to index 0: a client accumulating by index cannot take a gap.
+    assert [(raw.index, raw.id) for raw in fragments] == [(0, "c1")]
+    assert out[-1].choices[0].finish_reason == "tool_calls"
+    assert [call.id for call in gate.take_survivors()] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_a_startup_failure_withdraws_the_plugin_from_events_and_routing(tmp_path: Path) -> None:
+    package = """
+from gateway.plugins.api import RoutingDecision
+
+
+class Router:
+    async def rank(self, ctx):
+        return RoutingDecision.decline("never")
+
+
+def register(ctx):
+    ctx.add_router_backend("decline", Router())
+    ctx.subscribe("usage.logged", lambda event: None)
+
+    def boom():
+        raise RuntimeError("no database")
+
+    ctx.on_startup(boom)
+"""
+    _install(tmp_path, _manifest('contributes = ["lifecycle", "events", "routing"]'), package)
+    registry = load_plugins(_config(tmp_path))
+    assert registry.events.handlers_for("usage.logged")
+    assert "probe:decline" in known_backends()
+
+    await registry.startup()
+
+    assert registry.get("probe") is not None and registry.get("probe").status == "failed"  # type: ignore[union-attr]
+    assert registry.events.handlers_for("usage.logged") == []
+    assert "probe:decline" not in known_backends()
+
+
+@pytest.mark.asyncio
+async def test_health_checks_are_bounded_and_the_report_is_held(tmp_path: Path) -> None:
+    package = """
+import asyncio
+
+CALLS = {"n": 0}
+
+
+def register(ctx):
+    async def slow():
+        CALLS["n"] += 1
+        await asyncio.sleep(1)
+        return True
+
+    ctx.add_health_check(slow)
+"""
+    _install(tmp_path, _manifest('contributes = ["lifecycle"]'), package)
+    config = _config(tmp_path, health_timeout_ms=20)
+    registry = load_plugins(config)
+
+    report, critical = await registry.check_health()
+    again, _ = await registry.check_health()
+
+    assert report["probe"].startswith("failing: TimeoutError") and critical is False
+    assert again == report
+    assert sys.modules["probe_plugin"].CALLS["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_secret_settings_are_encrypted_at_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gateway.services.plugin_settings_service import ENCRYPTED_KEY, load_plugin_settings, save_plugin_settings
+    from gateway.services.secret_box import generate_secret_key
+
+    monkeypatch.setenv("OTARI_SECRET_KEY", generate_secret_key())
+    manifest = parse_manifest(
+        _manifest('[plugin.settings.token]\ntype = "str"\nsecret = true\n[plugin.settings.timeout]\ntype = "int"')
+    )
+    rows: dict[str, Any] = {}
+
+    class _Session:
+        async def execute(self, statement: Any) -> Any:
+            class _Result:
+                def scalars(self_inner) -> list[Any]:
+                    return list(rows.values())
+
+            return _Result()
+
+        async def get(self, model: Any, key: str) -> Any:
+            return rows.get(key)
+
+        def add(self, row: Any) -> None:
+            rows[row.key] = row
+
+        async def commit(self) -> None:
+            pass
+
+    await save_plugin_settings(_Session(), "probe", {"token": "hunter2", "timeout": 3}, manifest)  # type: ignore[arg-type]
+
+    stored = {key.removeprefix("plugin:probe:"): json.loads(row.value) for key, row in rows.items()}
+    assert stored["timeout"] == 3
+    assert ENCRYPTED_KEY in stored["token"] and "hunter2" not in json.dumps(stored["token"])
+    assert await load_plugin_settings(_Session(), "probe", manifest) == {"token": "hunter2", "timeout": 3}  # type: ignore[arg-type]

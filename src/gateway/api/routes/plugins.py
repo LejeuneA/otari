@@ -49,6 +49,7 @@ from gateway.services.plugin_settings_service import (
     save_plugin_settings,
     validate_plugin_settings,
 )
+from gateway.services.secret_box import SecretBoxUnavailableError
 from gateway.services.tenancy.deployment_user_service import DeploymentUserService
 from gateway.version import __version__
 
@@ -399,7 +400,11 @@ async def update_plugin_settings(
         values = validate_plugin_settings(plugin.manifest, body.values)
     except PluginSettingsError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
-    await save_plugin_settings(db, plugin.name, values)
+    try:
+        await save_plugin_settings(db, plugin.name, values, plugin.manifest)
+    except SecretBoxUnavailableError as error:
+        # Names the environment variable and nothing else; the value never left the request.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     # Applied after the write, like the gateway's own runtime overrides: a
     # cleared key falls back to config.yml's value, else the manifest default.
     raw_config = request.app.state.config.plugins.plugin_settings(plugin.name)

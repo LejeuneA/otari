@@ -436,7 +436,16 @@ class PluginsConfig(BaseModel):
         default=30_000,
         ge=1,
         le=600_000,
-        description="How long a plugin's startup, shutdown, or health hook may take before it is cancelled.",
+        description="How long a plugin's startup or shutdown hook may take before it is cancelled.",
+    )
+    health_timeout_ms: int = Field(
+        default=5_000,
+        ge=1,
+        le=60_000,
+        description=(
+            "How long one plugin health check may take when /health asks. Short, and the report is "
+            "held for a few seconds, because the health routes answer without a credential."
+        ),
     )
 
     def plugin_settings(self, name: str) -> dict[str, Any]:

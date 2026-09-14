@@ -111,6 +111,7 @@ providers:
 #   disabled: []
 #   observer_timeout_ms: 250    # budget per plugin traffic-observer call
 #   event_timeout_ms: 5000      # budget per plugin event handler (off the request path)
-#   hook_timeout_ms: 30000      # budget per plugin startup, shutdown, or health hook
+#   hook_timeout_ms: 30000      # budget per plugin startup or shutdown hook
+#   health_timeout_ms: 5000     # budget per plugin health check when /health asks
 #   agent-gates:
 #     # a plugin's own settings, under its name

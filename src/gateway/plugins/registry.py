@@ -14,6 +14,7 @@ import asyncio
 import importlib
 import inspect
 import sys
+import time
 import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from fastapi import APIRouter
 from gateway.log_config import logger
 from gateway.models.plugins import (
     PLUGIN_API_VERSION,
+    PLUGIN_NAME_PATTERN,
     PluginManifest,
     PluginPageManifest,
     PluginsConfig,
@@ -34,7 +36,8 @@ from gateway.models.plugins import (
 )
 from gateway.plugins.discovery import DiscoveredPlugin, DiscoveryProblem, PluginSource, discover_plugins
 from gateway.plugins.events import EventBus, Handler
-from gateway.plugins.guardrails import GuardrailBackend
+from gateway.plugins.guardrails import GuardrailBackend, profile_name
+from gateway.services.routing.backends import set_plugin_router_backends
 from gateway.version import __version__
 
 if TYPE_CHECKING:
@@ -287,8 +290,6 @@ def _callable(ctx: PluginContext, value: Any, what: str) -> Any:
 
 
 def _valid_key(ctx: PluginContext, name: str, what: str) -> None:
-    from gateway.models.plugins import PLUGIN_NAME_PATTERN
-
     if not isinstance(name, str) or not PLUGIN_NAME_PATTERN.fullmatch(name):
         msg = f"plugin {ctx.name!r} added a {what} whose name {name!r} does not match {PLUGIN_NAME_PATTERN.pattern}"
         raise PluginError(msg)
@@ -305,11 +306,16 @@ class PluginRegistry:
         *,
         event_timeout_ms: int = 5_000,
         hook_timeout_ms: int = 30_000,
+        health_timeout_ms: int = 5_000,
+        health_cache_seconds: float = 10.0,
     ) -> None:
         self.directory = directory
         self._plugins = plugins
         self.problems = problems
         self._hook_timeout = hook_timeout_ms / 1000
+        self._health_timeout = health_timeout_ms / 1000
+        self._health_cache_seconds = health_cache_seconds
+        self._health_report: tuple[float, dict[str, str], bool] | None = None
         self.events = EventBus(
             ((plugin.name, name, handler) for plugin in self.loaded() for name, handler in plugin.subscriptions),
             timeout_ms=event_timeout_ms,
@@ -333,8 +339,6 @@ class PluginRegistry:
 
     def guardrail_backends(self) -> dict[str, GuardrailBackend]:
         """Every loaded plugin's guardrails, keyed by the profile that names them."""
-        from gateway.plugins.guardrails import profile_name
-
         return {
             profile_name(plugin.name, name): backend
             for plugin in self.loaded()
@@ -356,54 +360,70 @@ class PluginRegistry:
     def pages(self) -> list[tuple[LoadedPlugin, PageContribution]]:
         return [(plugin, page) for plugin in self.loaded() for page in plugin.pages]
 
-    async def _run_hook(self, plugin: LoadedPlugin, hook: Hook, what: str) -> Any:
+    async def _run_hook(self, hook: Hook, timeout: float | None = None) -> Any:
         outcome = hook()
         if inspect.isawaitable(outcome):
-            outcome = await asyncio.wait_for(outcome, timeout=self._hook_timeout)
+            outcome = await asyncio.wait_for(outcome, timeout=timeout if timeout is not None else self._hook_timeout)
         return outcome
+
+    def _withdraw(self, plugin: LoadedPlugin) -> None:
+        """Take a plugin that failed after load out of the registries built at load."""
+        self.events.remove_plugin(plugin.name)
+        set_plugin_router_backends(self.router_backends())
 
     async def startup(self) -> None:
         """Run every loaded plugin's startup hooks; a plugin whose hook fails is marked failed."""
         for plugin in self.loaded():
             for hook in plugin.startup_hooks:
                 try:
-                    await self._run_hook(plugin, hook, "startup")
+                    await self._run_hook(hook)
                 except Exception as error:  # noqa: BLE001 one plugin's failure must not stop the boot
                     logger.error("Plugin %s failed at startup: %s\n%s", plugin.name, error, traceback.format_exc())
                     plugin.status = "failed"
                     plugin.error = f"startup hook: {type(error).__name__}: {error}"
+                    self._withdraw(plugin)
                     break
 
     async def shutdown(self) -> None:
         for plugin in self._plugins:
             for hook in plugin.shutdown_hooks:
                 try:
-                    await self._run_hook(plugin, hook, "shutdown")
+                    await self._run_hook(hook)
                 except Exception:  # noqa: BLE001 shutdown runs every hook regardless
                     logger.exception("Plugin %s failed at shutdown", plugin.name)
         await self.events.drain()
 
-    async def check_health(self) -> tuple[dict[str, str], bool]:
-        """Run every loaded plugin's health checks.
-
-        Returns each plugin's status text and whether a critical check failed.
-        """
-        report: dict[str, str] = {}
+    async def _check_plugin(self, plugin: LoadedPlugin) -> tuple[str, bool]:
+        problems: list[str] = []
         critical_failure = False
-        for plugin in self.loaded():
-            if not plugin.health_checks:
-                continue
-            problems: list[str] = []
-            for check in plugin.health_checks:
-                try:
-                    outcome = await self._run_hook(plugin, check.check, "health")
-                    if outcome is not None and not outcome:
-                        raise RuntimeError("check returned a falsy value")  # noqa: TRY301
-                except Exception as error:  # noqa: BLE001 a failing check is a report, not a crash
-                    problems.append(f"{type(error).__name__}: {error}")
-                    critical_failure = critical_failure or check.critical
-            report[plugin.name] = "ok" if not problems else "failing: " + "; ".join(problems)
-            plugin.health = {"status": report[plugin.name]}
+        for check in plugin.health_checks:
+            try:
+                outcome = await self._run_hook(check.check, self._health_timeout)
+                if outcome is not None and not outcome:
+                    raise RuntimeError("check returned a falsy value")  # noqa: TRY301
+            except Exception as error:  # noqa: BLE001 a failing check is a report, not a crash
+                problems.append(f"{type(error).__name__}: {error}")
+                critical_failure = critical_failure or check.critical
+        status = "ok" if not problems else "failing: " + "; ".join(problems)
+        plugin.health = {"status": status}
+        return status, critical_failure
+
+    async def check_health(self) -> tuple[dict[str, str], bool]:
+        """Every loaded plugin's health, and whether a critical check failed.
+
+        Plugins are checked concurrently, each check under ``plugins.health_timeout_ms``,
+        and the report is served from memory for a few seconds afterwards: the
+        health routes are unauthenticated, so a caller must not be able to fan
+        the checks out as fast as it can send requests.
+        """
+        now = time.monotonic()
+        if self._health_report is not None and now - self._health_report[0] < self._health_cache_seconds:
+            return self._health_report[1], self._health_report[2]
+        checked = [plugin for plugin in self.loaded() if plugin.health_checks]
+        outcomes = await asyncio.gather(*(self._check_plugin(plugin) for plugin in checked))
+        report = {plugin.name: status for plugin, (status, _) in zip(checked, outcomes, strict=True)}
+        critical_failure = any(critical for _, critical in outcomes)
+        self._health_report = (now, report, critical_failure)
         return report, critical_failure
 
     async def apply_settings(self, name: str, values: dict[str, Any]) -> LoadedPlugin | None:
@@ -695,9 +715,8 @@ def load_plugins(config: "GatewayConfig", container: "Container | None" = None) 
         problems,
         event_timeout_ms=plugins_config.event_timeout_ms,
         hook_timeout_ms=plugins_config.hook_timeout_ms,
+        health_timeout_ms=plugins_config.health_timeout_ms,
     )
-    from gateway.services.routing.backends import set_plugin_router_backends
-
     set_plugin_router_backends(registry.router_backends())
     logger.info("Plugins: %s", registry.summary)
     return registry

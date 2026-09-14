@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from gateway.core.config import API_KEY_HEADER, API_ROOT, GatewayConfig
 from gateway.models.plugins import PluginsConfig
+from gateway.services.secret_box import generate_secret_key
 
 from .conftest import build_test_client
 
@@ -129,7 +130,9 @@ def plugins_dir(tmp_path: Path) -> Generator[Path]:
 
 
 @pytest.fixture
-def ext_client(postgres_url: str, plugins_dir: Path) -> Generator[TestClient]:
+def ext_client(postgres_url: str, plugins_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient]:
+    # A secret setting is encrypted on write, which needs a key like any stored credential.
+    monkeypatch.setenv("OTARI_SECRET_KEY", generate_secret_key())
     config = GatewayConfig(
         database_url=postgres_url,
         master_key="test-master-key",

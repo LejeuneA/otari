@@ -1019,6 +1019,19 @@ class ChatStreamGate(_GateBase):
             return held
 
     def _rewrite(self, held: list[Any], denied: dict[Any, str], *, all_denied: bool) -> list[Any]:
+        # Survivors are renumbered from zero: a client that accumulates fragments
+        # into a list by ``index`` (the OpenAI SDK's stream helper does) cannot
+        # take a gap where the denied call was.
+        surviving = sorted(
+            {
+                int(_get(raw, "index") or 0)
+                for chunk in held
+                for choice in _get(chunk, "choices") or []
+                for raw in _get(_get(choice, "delta"), "tool_calls") or []
+                if int(_get(raw, "index") or 0) not in denied
+            }
+        )
+        renumbered = {old: new for new, old in enumerate(surviving)}
         out: list[Any] = []
         template: Any = None
         for chunk in held:
@@ -1026,10 +1039,14 @@ class ChatStreamGate(_GateBase):
             for choice in _get(chunk, "choices") or []:
                 delta = _get(choice, "delta")
                 calls = _get(delta, "tool_calls") or []
-                kept = [raw for raw in calls if int(_get(raw, "index") or 0) not in denied]
-                if len(kept) != len(calls):
+                kept = [
+                    _copy(raw, index=renumbered[int(_get(raw, "index") or 0)])
+                    for raw in calls
+                    if int(_get(raw, "index") or 0) not in denied
+                ]
+                if len(kept) != len(calls) or any(renumbered[i] != i for i in renumbered):
                     delta = _copy(delta, tool_calls=kept or None)
-                    template = template or chunk
+                    template = template if template is not None or len(kept) == len(calls) else chunk
                 finish = _get(choice, "finish_reason")
                 if all_denied and finish == "tool_calls":
                     finish = "stop"
