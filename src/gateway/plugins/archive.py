@@ -9,13 +9,17 @@ the next start.
 """
 
 import io
+import itertools
+import json
 import re
 import shutil
 import tarfile
 import tempfile
 import zipfile
 import zlib
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -140,12 +144,49 @@ def _replace_directory(staged: Path, target: Path) -> None:
         shutil.rmtree(previous, ignore_errors=True)
 
 
-def install_archive(data: bytes, directory: Path) -> DiscoveredPlugin:
+INSTALL_RECORD = "otari-install.json"
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    numbers: list[int] = []
+    for part in text.split("."):
+        digits = "".join(itertools.takewhile(str.isdigit, part))
+        if not digits:
+            break
+        numbers.append(int(digits))
+    return tuple(numbers)
+
+
+def read_install_record(install_dir: Path) -> dict[str, Any] | None:
+    """Where an installed plugin came from, written beside its tree at install time."""
+    path = install_dir / INSTALL_RECORD
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def install_archive(
+    data: bytes,
+    directory: Path,
+    *,
+    source: str = "upload",
+    ref: str | None = None,
+    force: bool = False,
+) -> DiscoveredPlugin:
     """Unpack ``data`` into ``directory/<plugin name>`` and describe what landed.
 
+    ``source`` and ``ref`` are recorded beside the tree, so a later listing can
+    say where a plugin came from. An archive whose version is older than the
+    one installed is refused unless ``force`` is set: its migration chain may
+    not know the revisions the newer one stamped, and the boot would refuse it.
+
     Raises:
-        PluginInstallError: If the archive is too large, unsafe, unreadable, or
-            does not hold exactly one valid plugin.
+        PluginInstallError: If the archive is too large, unsafe, unreadable,
+            does not hold exactly one valid plugin, or is a downgrade.
 
     """
     if len(data) > MAX_ARCHIVE_BYTES:
@@ -163,6 +204,31 @@ def install_archive(data: bytes, directory: Path) -> DiscoveredPlugin:
         except PluginManifestError as error:
             raise PluginInstallError(str(error)) from error
         target = directory / discovered.manifest.name
+        existing = read_install_record(target) if target.is_dir() else None
+        installed_version = str(existing.get("version", "")) if existing else ""
+        if (
+            installed_version
+            and not force
+            and _version_tuple(discovered.manifest.version) < _version_tuple(installed_version)
+        ):
+            msg = (
+                f"{discovered.manifest.name} {discovered.manifest.version} is older than the installed "
+                f"{installed_version}; a downgrade may not know the migrations the newer version ran. "
+                "Pass force to install it anyway."
+            )
+            raise PluginInstallError(msg)
+        (staged / INSTALL_RECORD).write_text(
+            json.dumps(
+                {
+                    "name": discovered.manifest.name,
+                    "version": discovered.manifest.version,
+                    "source": source,
+                    "ref": ref,
+                    "installed_at": datetime.now(UTC).isoformat(),
+                },
+                indent=2,
+            )
+        )
         _replace_directory(staged, target)
     except BaseException:
         shutil.rmtree(staged, ignore_errors=True)

@@ -1,6 +1,14 @@
-from fastapi import APIRouter, Depends, FastAPI
+from collections.abc import Callable
+from typing import Any
 
-from gateway.api.deps import require_capability
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+
+from gateway.api.deps import (
+    require_capability,
+    require_deployment_operator,
+    verify_api_key_or_master_key,
+    verify_master_key,
+)
 from gateway.api.routes import (
     admin,
     agent_telemetry,
@@ -65,7 +73,7 @@ from gateway.api.routes import (
 )
 from gateway.container import Container
 from gateway.core.config import API_ROOT, OTLP_ROOT, GatewayConfig
-from gateway.plugins import PluginRegistry
+from gateway.plugins import LoadedPlugin, PluginRegistry
 
 
 def register_routers(app: FastAPI, config: GatewayConfig) -> None:
@@ -115,6 +123,24 @@ def _register_contributed_routers(api: APIRouter, container: Container) -> None:
         )
 
 
+def _refuse_when_failed(plugin: LoadedPlugin) -> Callable[[], None]:
+    """A route dependency that answers 503 once the plugin is marked failed.
+
+    Routers are mounted before the lifespan runs the plugin's migrations, and a
+    router cannot be unmounted, so a plugin whose chain fails at startup is
+    refused here rather than served against tables it never got.
+    """
+
+    def dependency() -> None:
+        if plugin.status == "failed":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Plugin {plugin.name!r} failed to load; see the plugins listing.",
+            )
+
+    return dependency
+
+
 def _register_plugin_routers(api: APIRouter, registry: PluginRegistry) -> None:
     """Mount every loaded plugin's routers under ``/plugins/<name>``.
 
@@ -123,8 +149,26 @@ def _register_plugin_routers(api: APIRouter, registry: PluginRegistry) -> None:
     contributed router's.
     """
     for plugin in registry.loaded():
-        for router in plugin.routers:
-            api.include_router(router, prefix=plugin.api_prefix, tags=[f"plugin:{plugin.name}"])
+        for mounted in plugin.routers:
+            dependencies = [Depends(_refuse_when_failed(plugin))]
+            gate = _ROUTER_AUTH[mounted.auth]
+            if gate is not None:
+                dependencies.append(Depends(gate))
+            api.include_router(
+                mounted.router,
+                prefix=plugin.api_prefix,
+                tags=[f"plugin:{plugin.name}"],
+                dependencies=dependencies,
+            )
+
+
+# The credential each ``PluginContext.add_router(auth=...)`` value asks for.
+_ROUTER_AUTH: dict[str, Callable[..., Any] | None] = {
+    "operator": require_deployment_operator,
+    "session": verify_master_key,
+    "api_key": verify_api_key_or_master_key,
+    "none": None,
+}
 
 
 def _register_core_routers(api: APIRouter, config: GatewayConfig) -> None:

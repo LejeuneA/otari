@@ -183,7 +183,9 @@ def discover_plugins(directory: Path | None) -> tuple[list[DiscoveredPlugin], li
     """Describe every plugin from both sources, entry points first.
 
     A name found twice keeps its first occurrence and reports the second, so an
-    installed distribution is not shadowed by a directory of the same name.
+    installed distribution is not shadowed by a directory of the same name. The
+    same goes for a package: one import name resolves to one module, so a second
+    plugin declaring it would silently run the first plugin's code.
     """
     found, problems = discover_entry_point_plugins()
     if directory is not None:
@@ -191,19 +193,33 @@ def discover_plugins(directory: Path | None) -> tuple[list[DiscoveredPlugin], li
         found.extend(from_directory)
         problems.extend(directory_problems)
     seen: dict[str, DiscoveredPlugin] = {}
+    seen_packages: dict[str, DiscoveredPlugin] = {}
     unique: list[DiscoveredPlugin] = []
     for plugin in found:
         name = plugin.manifest.name
+        package = plugin.manifest.package
+        location = str(plugin.install_dir or plugin.package_dir)
         if name in seen:
             first = seen[name]
             problems.append(
                 DiscoveryProblem(
                     plugin.source,
-                    str(plugin.install_dir or plugin.package_dir),
+                    location,
                     f"plugin {name!r} is already provided by {first.source} at {first.package_dir}",
                 )
             )
             continue
+        if package in seen_packages:
+            first = seen_packages[package]
+            problems.append(
+                DiscoveryProblem(
+                    plugin.source,
+                    location,
+                    f"package {package!r} is already provided by plugin {first.manifest.name!r} at {first.package_dir}",
+                )
+            )
+            continue
         seen[name] = plugin
+        seen_packages[package] = plugin
         unique.append(plugin)
     return unique, problems

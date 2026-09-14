@@ -5229,6 +5229,12 @@
       "InstallPluginRequest": {
         "additionalProperties": false,
         "properties": {
+          "force": {
+            "default": false,
+            "description": "Install even when the version is older than the installed one.",
+            "title": "Force",
+            "type": "boolean"
+          },
           "ref": {
             "anyOf": [
               {
@@ -5272,6 +5278,43 @@
         "title": "InstallPluginResponse",
         "type": "object"
       },
+      "InstallRecord": {
+        "description": "Where a directory plugin came from, as recorded at install time.",
+        "properties": {
+          "installed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Installed At"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "source": {
+            "description": "'upload', or the GitHub repository as owner/name.",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "InstallRecord",
+        "type": "object"
+      },
       "InstalledPlugin": {
         "properties": {
           "api_prefix": {
@@ -5313,6 +5356,17 @@
             ],
             "title": "Homepage"
           },
+          "installed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstallRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance, for a plugin installed from an archive."
+          },
           "migrations": {
             "description": "Whether the plugin owns database migrations.",
             "title": "Migrations",
@@ -5321,6 +5375,18 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A change on disk that takes effect on the next start, when one is waiting.",
+            "title": "Pending"
           },
           "routes": {
             "description": "How many routes the plugin registered.",
@@ -25862,8 +25928,22 @@
     },
     "/api/v1/plugins/upload": {
       "post": {
-        "description": "Install a plugin from an uploaded zip or tar.gz. It loads on the next start.",
+        "description": "Install a plugin from an uploaded zip or tar.gz. It loads on the next start.\n\n``force`` installs an archive whose version is older than the installed one.",
         "operationId": "plugins-upload_plugin",
+        "parameters": [
+          {
+            "description": "Install even when the version is older than the installed one.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Install even when the version is older than the installed one.",
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "multipart/form-data": {

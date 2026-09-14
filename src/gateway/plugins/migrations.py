@@ -8,6 +8,7 @@ application's.
 """
 
 import os
+import traceback
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
@@ -34,14 +35,45 @@ def _alembic_config(database_url: str, script_location: "Path") -> Config:
     return alembic_cfg
 
 
-def run_plugin_migrations(database_url: str, plugins: Iterable["LoadedPlugin"], revision: str = "head") -> None:
-    """Upgrade every migration directory the loaded plugins registered."""
+def run_plugin_migrations(
+    database_url: str, plugins: Iterable["LoadedPlugin"], revision: str = "head"
+) -> list["LoadedPlugin"]:
+    """Upgrade every migration directory the loaded plugins registered.
+
+    A chain that fails marks its plugin failed, with the error, and the rest
+    still run: a plugin is optional, so its broken migration is its own
+    problem rather than a refused boot. The failed plugins are returned so a
+    command line caller can exit non-zero over them.
+    """
+    failed: list["LoadedPlugin"] = []
     for plugin in plugins:
         if plugin.status != "loaded":
             continue
         for script_location in plugin.migrations:
             logger.info("Running migrations for plugin %s from %s", plugin.name, script_location)
-            command.upgrade(_alembic_config(database_url, script_location), revision)
+            try:
+                command.upgrade(_alembic_config(database_url, script_location), revision)
+            except Exception as error:  # noqa: BLE001 one plugin's chain must not stop the rest
+                logger.error("Plugin %s migrations failed: %s\n%s", plugin.name, error, traceback.format_exc())
+                plugin.status = "failed"
+                plugin.error = f"migrations failed: {type(error).__name__}: {error}"
+                failed.append(plugin)
+                break
+    return failed
+
+
+def drop_plugin_tables(database_url: str, plugin: "LoadedPlugin") -> None:
+    """Run a plugin's chain back to base and drop its version table, for an uninstall that takes the data."""
+    from sqlalchemy import create_engine, text
+
+    for script_location in plugin.migrations:
+        command.downgrade(_alembic_config(database_url, script_location), "base")
+    engine = create_engine(to_sync_url(database_url))
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{plugin.manifest.version_table}"'))
+    finally:
+        engine.dispose()
 
 
 def run_plugin_env(context: Any, target_metadata: "MetaData | None", plugin_name: str) -> None:

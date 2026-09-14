@@ -35,9 +35,13 @@ otari plugins remove agent-gates
 ```
 
 `install` writes into the plugins directory and needs no `allow_install`
-setting: whoever runs it already has the gateway's filesystem. A curl
-equivalent of the upload, for a gateway you reach over HTTP, is in
-`scripts/upload_plugin.sh`.
+setting: whoever runs it already has the gateway's filesystem. For a gateway
+you reach over HTTP, the upload is one request:
+
+```bash
+curl --fail-with-body -X POST "$OTARI_URL/api/v1/plugins/upload" \
+  -H "Authorization: Bearer $OTARI_MASTER_KEY" -F "file=@./otari-warden.zip"
+```
 
 **As a Python distribution**, for an image you build yourself:
 
@@ -46,11 +50,26 @@ uv pip install otari-agent-gates
 ```
 
 A distribution registers itself through the `otari.plugins` entry-point group,
-so nothing else is needed. The dashboard lists it with source `entry_point` and
-cannot remove it; `uv pip uninstall` does.
+where the entry point's value names the package (`agent-gates =
+"otari_agent_gates"`), and ships `otari-plugin.toml` as package data so the
+manifest is beside the code once installed. The dashboard lists it with source
+`entry_point` and cannot remove it; `uv pip uninstall` does.
 
 A plugin takes effect on the next start, whichever way it arrived. The
-Marketplace page says when a restart is owed.
+Marketplace page says when a restart is owed; it reads that from the plugins
+directory rather than from memory, so every worker of a deployment answers the
+same after one of them took an install. A plugin that is running keeps every
+contribution until that restart, including when a newer version is installed
+over it or its directory is removed: the listing names what is waiting.
+
+An install records where the plugin came from (`otari-install.json` beside the
+tree: the repository or `upload`, the ref, and the time), which the listing
+shows. An archive whose version is older than the installed one is refused,
+because its migration chain may not know the revisions the newer version ran;
+`--force` (or `force` on the API) installs it anyway. Removing a plugin leaves
+its tables in place, so a reinstall picks up where the chain left off;
+`otari plugins remove <name> --drop-tables` runs the chain back to base and
+drops its version table too.
 
 ## Configuration
 
@@ -99,7 +118,7 @@ otari-agent-gates/
 ```toml
 # src/otari_agent_gates/otari-plugin.toml
 [plugin]
-name = "agent-gates"              # letters, digits, hyphens; the URL segment the plugin mounts at
+name = "agent-gates"              # letters, digits, hyphens, up to 47; the URL segment the plugin mounts at
 version = "0.1.0"
 description = "Checks a coding agent's turn against a repository's stated rules."
 package = "otari_agent_gates"     # the importable package; the manifest sits inside it
@@ -122,7 +141,7 @@ from .routes import router
 
 def register(ctx: PluginContext) -> None:
     settings = ctx.config                       # the plugins.agent-gates block, raw
-    ctx.add_router(router)                      # served under /api/v1/plugins/agent-gates
+    ctx.add_router(router, auth="api_key")      # served under /api/v1/plugins/agent-gates, to API keys
     ctx.add_cli(policy)                         # `otari policy ...`
     ctx.add_migrations(Path(__file__).parent / "migrations")
 ```
@@ -130,7 +149,12 @@ def register(ctx: PluginContext) -> None:
 What each contribution means:
 
 - **Routes** mount under `/api/v1/plugins/<name>`, plus the router's own
-  prefix. Mounting adds no authentication. Declare it per route the way Otari's
+  prefix. The mount applies the credential `auth` names to every route on the
+  router: `"operator"` (the default) is a deployment operator, as the gateway's
+  own management routers require; `"session"` is any signed-in dashboard session
+  or the master key; `"api_key"` is an API key or the master key, for a route a
+  client program calls; `"none"` mounts it open, for a route that authenticates
+  in a way of its own. A route may still add a dependency of its own the way Otari's
   routers do, with `verify_master_key`, `require_deployment_operator`, or
   `verify_api_key_or_master_key` from `gateway.api.deps`.
 - **CLI groups** attach to `otari` at the top level, under the group's own
@@ -161,9 +185,11 @@ What each contribution means:
 - **`ctx.container`** is the composition root, for a plugin that needs a port.
   It is `None` when plugins are loaded for the command line alone.
 
-A plugin that raises during import or `register` is listed as failed with its
-error, and the gateway boots without it. Otari never fails to start over a
-plugin.
+A plugin that raises during import, `register`, or its own migrations is
+listed as failed with its error, and the gateway boots without it: its routes
+answer 503 until the next start. Otari never fails to start over a plugin.
+Removing a plugin deletes its code, not its tables: the plugin's chain is never
+downgraded, so its tables and `alembic_version_<name>` stay until you drop them.
 
 For a plugin installed from a directory, the directory holding the package is
 put on `sys.path`. A src layout (`src/<package>/`) and a flat layout

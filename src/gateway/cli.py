@@ -10,7 +10,7 @@ import click
 import uvicorn
 from uvicorn.config import logger
 
-from gateway.core.config import API_ROOT, load_config
+from gateway.core.config import API_ROOT, GatewayConfig, load_config
 from gateway.log_config import setup_logger
 from gateway.main import create_app
 
@@ -38,7 +38,33 @@ def _parse_log_level(ctx: click.Context, param: click.Parameter, value: str | No
     )
 
 
-@click.group()
+class _OtariCli(click.Group):
+    """The ``otari`` group, with plugin command groups attached on demand.
+
+    A built-in command never imports a plugin: plugins load only when the
+    command line names one of their groups or asks for help, and from the
+    configuration ``-c/--config`` names, so ``otari serve -c prod.yml`` and
+    ``otari warden check`` read the same plugins directory.
+    """
+
+    _plugin_groups: dict[str, click.Group] | None = None
+
+    def _groups(self) -> dict[str, click.Group]:
+        if self._plugin_groups is None:
+            self._plugin_groups = _plugin_command_groups(_config_path_from_argv())
+        return self._plugin_groups
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        return sorted({*super().list_commands(ctx), *self._groups()})
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        built_in = super().get_command(ctx, cmd_name)
+        if built_in is not None:
+            return built_in
+        return self._groups().get(cmd_name)
+
+
+@click.group(cls=_OtariCli)
 def cli() -> None:
     """Otari CLI."""
 
@@ -168,6 +194,9 @@ def init_db(config: str | None, database_url: str | None) -> None:
     click.echo(f"Initializing database: {gateway_config.database_url}")
 
     db_init(gateway_config)
+    if gateway_config.auto_migrate:
+        # init_db ran Otari's chain under the same condition; the plugins' follow.
+        _run_plugin_chains(gateway_config)
 
     click.echo("Database initialized successfully!")
 
@@ -214,15 +243,25 @@ def migrate(config: str | None, database_url: str | None, revision: str) -> None
 
     # Plugin chains always go to their own head: --revision addresses Otari's
     # chain, and a plugin's revisions are not on it.
+    _run_plugin_chains(gateway_config)
+
+
+def _run_plugin_chains(gateway_config: GatewayConfig) -> None:
+    """Upgrade every loaded plugin's chain, exiting non-zero if one fails."""
     from gateway.plugins import load_plugins
     from gateway.plugins.migrations import run_plugin_migrations
 
     registry = load_plugins(gateway_config)
     with_migrations = [plugin for plugin in registry.loaded() if plugin.migrations]
-    if with_migrations:
-        click.echo(f"Running plugin migrations: {', '.join(plugin.name for plugin in with_migrations)}")
-        run_plugin_migrations(gateway_config.database_url, with_migrations)
-        click.echo("Plugin migrations completed successfully!")
+    if not with_migrations:
+        return
+    click.echo(f"Running plugin migrations: {', '.join(plugin.name for plugin in with_migrations)}")
+    failed = run_plugin_migrations(gateway_config.database_url, with_migrations)
+    for plugin in failed:
+        click.echo(f"Plugin {plugin.name} migrations failed: {plugin.error}", err=True)
+    if failed:
+        sys.exit(1)
+    click.echo("Plugin migrations completed successfully!")
 
 
 @cli.command(name="gen-secret-key")
@@ -607,12 +646,15 @@ def plugins_list(config: str | None) -> None:
 @click.argument("source")
 @click.option("--ref", default=None, help="Branch, tag, or commit for a GitHub source (default branch when unset)")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="Path to config YAML file")
-def plugins_install(source: str, ref: str | None, config: str | None) -> None:
+@click.option("--force", is_flag=True, help="Install even when the version is older than the installed one")
+def plugins_install(source: str, ref: str | None, config: str | None, force: bool) -> None:
     """Install a plugin from a .zip or .tar.gz file, or a GitHub owner/name.
 
     Writes into the plugins directory; a running gateway loads it on its next
     start. No allow_install setting is consulted here: whoever runs this command
-    already has the gateway's own filesystem.
+    already has the gateway's own filesystem. A version older than the installed
+    one is refused unless --force is given, since its migrations may not know
+    the revisions the newer one ran.
     """
     import asyncio
 
@@ -624,10 +666,12 @@ def plugins_install(source: str, ref: str | None, config: str | None) -> None:
         path = Path(source)
         if path.is_file():
             data = path.read_bytes()
+            origin = "upload"
         else:
             click.echo(f"Downloading {source} from GitHub...")
             data = asyncio.run(fetch_github_archive(source, ref))
-        installed = install_archive(data, directory)
+            origin = source
+        installed = install_archive(data, directory, source=origin, ref=ref, force=force)
     except PluginInstallError as error:
         click.echo(f"Install failed: {error}", err=True)
         sys.exit(1)
@@ -639,18 +683,41 @@ def plugins_install(source: str, ref: str | None, config: str | None) -> None:
 @plugins.command(name="remove")
 @click.argument("name")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="Path to config YAML file")
-def plugins_remove(name: str, config: str | None) -> None:
-    """Delete a plugin from the plugins directory."""
-    from gateway.plugins import plugins_directory
+@click.option(
+    "--drop-tables",
+    is_flag=True,
+    help="Also run the plugin's migration chain back to base and drop its version table",
+)
+def plugins_remove(name: str, config: str | None, drop_tables: bool) -> None:
+    """Delete a plugin from the plugins directory.
+
+    Its tables stay unless --drop-tables is given: the data may be wanted, and
+    a reinstall picks it up where the chain left off.
+    """
+    from gateway.plugins import load_plugins, plugins_directory
     from gateway.plugins.archive import PluginInstallError, remove_installed
     from gateway.plugins.discovery import discover_directory_plugins
 
-    directory = plugins_directory(load_config(config))
+    gateway_config = load_config(config)
+    directory = plugins_directory(gateway_config)
     found, _ = discover_directory_plugins(directory)
     match = next((plugin for plugin in found if plugin.manifest.name == name), None)
     if match is None or match.install_dir is None:
         click.echo(f"No plugin named {name!r} in {directory}", err=True)
         sys.exit(1)
+    if drop_tables:
+        from gateway.plugins.migrations import drop_plugin_tables
+
+        loaded = load_plugins(gateway_config).get(name)
+        if loaded is None or not loaded.migrations:
+            click.echo(f"{name} has no migration chain to run back; nothing to drop.")
+        else:
+            try:
+                drop_plugin_tables(gateway_config.database_url, loaded)
+            except Exception as error:  # noqa: BLE001 report and stop rather than remove code the data still needs
+                click.echo(f"Could not drop {name}'s tables: {error}", err=True)
+                sys.exit(1)
+            click.echo(f"Ran {name}'s migrations back to base and dropped {loaded.manifest.version_table}.")
     try:
         remove_installed(match.install_dir, directory)
     except PluginInstallError as error:
@@ -659,34 +726,56 @@ def plugins_remove(name: str, config: str | None) -> None:
     click.echo(f"Removed {name} from {match.install_dir}. Restart the gateway to unload it.")
 
 
-def _attach_plugin_commands() -> None:
-    """Add every loaded plugin's command groups to ``otari``.
+def _config_path_from_argv() -> str | None:
+    """The ``-c``/``--config`` value on the command line, wherever it sits."""
+    argv = sys.argv[1:]
+    for index, arg in enumerate(argv):
+        if arg in ("-c", "--config") and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--config="):
+            return arg.split("=", 1)[1]
+    return None
 
-    Discovery reads the environment the way ``otari serve`` without ``--config``
-    does, so OTARI_PLUGINS_DIR names a directory other than ./otari-plugins.
-    Never fatal: a plugin that breaks here is skipped so the built-in commands
+
+def _plugin_command_groups(config_path: str | None) -> dict[str, click.Group]:
+    """Every loaded plugin's command groups, keyed by name.
+
+    Never fatal: a plugin that breaks here is left out so the built-in commands
     keep working, and ``otari plugins list`` reports why.
     """
     try:
         from gateway.plugins import load_plugins
 
-        registry = load_plugins(load_config(None))
+        registry = load_plugins(load_config(config_path))
     except Exception as error:  # noqa: BLE001 a broken config must not take the CLI down
         logger.debug("Plugin commands unavailable: %s", error)
-        return
+        return {}
+    groups: dict[str, click.Group] = {}
+    owners: dict[str, str] = {}
     for plugin in registry.loaded():
         for group in plugin.cli_groups:
+            if not group.name:
+                continue
             if group.name in cli.commands:
                 logger.warning(
                     "Plugin %s's command %r collides with a built-in and is skipped", plugin.name, group.name
                 )
                 continue
-            cli.add_command(group)
+            if group.name in groups:
+                logger.warning(
+                    "Plugin %s's command %r collides with plugin %s's and is skipped",
+                    plugin.name,
+                    group.name,
+                    owners[group.name],
+                )
+                continue
+            groups[group.name] = group
+            owners[group.name] = plugin.name
+    return groups
 
 
 def main() -> None:
     """Entry point for the CLI."""
-    _attach_plugin_commands()
     cli()
 
 

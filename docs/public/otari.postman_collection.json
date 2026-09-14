@@ -5638,7 +5638,7 @@
         {
           "name": "Upload Plugin",
           "request": {
-            "description": "Install a plugin from an uploaded zip or tar.gz. It loads on the next start.",
+            "description": "Install a plugin from an uploaded zip or tar.gz. It loads on the next start.\n\n``force`` installs an archive whose version is older than the installed one.",
             "header": [],
             "method": "POST",
             "url": {
@@ -5651,7 +5651,15 @@
                 "plugins",
                 "upload"
               ],
-              "raw": "{{baseUrl}}/api/v1/plugins/upload"
+              "query": [
+                {
+                  "description": "Install even when the version is older than the installed one.",
+                  "disabled": true,
+                  "key": "force",
+                  "value": ""
+                }
+              ],
+              "raw": "{{baseUrl}}/api/v1/plugins/upload?force="
             }
           }
         },

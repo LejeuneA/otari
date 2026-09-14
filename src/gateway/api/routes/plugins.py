@@ -22,6 +22,7 @@ from gateway.plugins.archive import (
     PluginInstallError,
     fetch_github_archive,
     install_archive,
+    read_install_record,
     remove_installed,
 )
 from gateway.plugins.marketplace import Marketplace, MarketplaceEntry
@@ -39,6 +40,14 @@ class PluginUiInfo(BaseModel):
     url: str = Field(description="Where the plugin's page is served; the dashboard frames it.")
 
 
+class InstallRecord(BaseModel):
+    """Where a directory plugin came from, as recorded at install time."""
+
+    source: str = Field(description="'upload', or the GitHub repository as owner/name.")
+    ref: str | None = None
+    installed_at: str | None = None
+
+
 class InstalledPlugin(BaseModel):
     name: str
     version: str
@@ -46,6 +55,12 @@ class InstalledPlugin(BaseModel):
     source: Literal["entry_point", "directory"]
     status: Literal["loaded", "failed", "disabled", "pending_restart"]
     error: str | None = None
+    pending: str | None = Field(
+        default=None, description="A change on disk that takes effect on the next start, when one is waiting."
+    )
+    installed: InstallRecord | None = Field(
+        default=None, description="Provenance, for a plugin installed from an archive."
+    )
     homepage: str | None = None
     ui: PluginUiInfo | None = None
     api_prefix: str = Field(description="Where the plugin's routes mount, below the API root.")
@@ -96,6 +111,7 @@ class InstallPluginRequest(BaseModel):
     ref: str | None = Field(
         default=None, description="Branch, tag, or commit; the default branch when unset.", max_length=200
     )
+    force: bool = Field(default=False, description="Install even when the version is older than the installed one.")
 
 
 class InstallPluginResponse(BaseModel):
@@ -121,17 +137,32 @@ def _describe(plugin: LoadedPlugin) -> InstalledPlugin:
         source=plugin.source,
         status=plugin.status,
         error=plugin.error,
+        pending=plugin.pending,
+        installed=_install_record(plugin),
         homepage=plugin.manifest.homepage,
         ui=PluginUiInfo(label=plugin.ui.label, url=plugin.ui_url or "") if plugin.ui else None,
         api_prefix=plugin.api_prefix,
-        routes=sum(len(item.routes) for item in plugin.routers),
+        routes=sum(len(item.router.routes) for item in plugin.routers),
         cli_commands=[group.name for group in plugin.cli_groups if group.name],
         migrations=bool(plugin.migrations),
     )
 
 
+def _install_record(plugin: LoadedPlugin) -> InstallRecord | None:
+    if plugin.install_dir is None:
+        return None
+    record = read_install_record(plugin.install_dir)
+    if record is None:
+        return None
+    return InstallRecord(
+        source=str(record.get("source", "upload")),
+        ref=record.get("ref"),
+        installed_at=record.get("installed_at"),
+    )
+
+
 def _restart_required(registry: PluginRegistry) -> bool:
-    return any(plugin.status == "pending_restart" for plugin in registry)
+    return any(plugin.status == "pending_restart" for plugin in registry) or registry.changes_on_disk()
 
 
 def _require_install_allowed(config: GatewayConfig) -> None:
@@ -189,12 +220,28 @@ async def marketplace(
     )
 
 
-async def _install_bytes(request: Request, data: bytes) -> InstallPluginResponse:
+async def _install_bytes(
+    request: Request, data: bytes, *, source: str, ref: str | None = None, force: bool = False
+) -> InstallPluginResponse:
     registry = _registry(request)
     try:
-        discovered = await asyncio.to_thread(install_archive, data, registry.directory)
+        discovered = await asyncio.to_thread(
+            install_archive, data, registry.directory, source=source, ref=ref, force=force
+        )
     except PluginInstallError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    current = registry.get(discovered.manifest.name)
+    if current is not None and current.source == "entry_point":
+        # Discovery lets the entry point win, so the directory copy would never
+        # load; refuse rather than answer 201 for a plugin that stays pending.
+        await asyncio.to_thread(remove_installed, discovered.install_dir or registry.directory, registry.directory)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Plugin {discovered.manifest.name!r} is installed as a Python distribution; "
+                "uninstall it with pip or uv first."
+            ),
+        )
     assert discovered.install_dir is not None  # noqa: S101 a directory install always has one
     pending = registry.record_pending(discovered.manifest, discovered.package_dir, discovered.install_dir)
     logger.info(
@@ -211,8 +258,12 @@ async def upload_plugin(
     request: Request,
     config: Annotated[GatewayConfig, Depends(get_config)],
     file: UploadFile,
+    force: Annotated[bool, Query(description="Install even when the version is older than the installed one.")] = False,
 ) -> InstallPluginResponse:
-    """Install a plugin from an uploaded zip or tar.gz. It loads on the next start."""
+    """Install a plugin from an uploaded zip or tar.gz. It loads on the next start.
+
+    ``force`` installs an archive whose version is older than the installed one.
+    """
     _require_install_allowed(config)
     chunks: list[bytes] = []
     received = 0
@@ -224,7 +275,7 @@ async def upload_plugin(
                 detail=f"Plugin archives are limited to {MAX_ARCHIVE_BYTES // (1024 * 1024)} MiB.",
             )
         chunks.append(chunk)
-    return await _install_bytes(request, b"".join(chunks))
+    return await _install_bytes(request, b"".join(chunks), source="upload", force=force)
 
 
 @router.post("/install", response_model=InstallPluginResponse, status_code=status.HTTP_201_CREATED)
@@ -239,7 +290,7 @@ async def install_plugin(
         data = await fetch_github_archive(body.repo, body.ref)
     except PluginInstallError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
-    return await _install_bytes(request, data)
+    return await _install_bytes(request, data, source=body.repo, ref=body.ref, force=body.force)
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT)

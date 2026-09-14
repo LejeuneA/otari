@@ -45,6 +45,18 @@ class UiContribution:
     label: str
 
 
+# What a plugin's router asks of a caller, applied at the mount. The default is
+# the gateway's own rule for a management router: a route is open only when its
+# plugin said so.
+RouterAuth = Literal["operator", "session", "api_key", "none"]
+
+
+@dataclass(frozen=True)
+class PluginRouter:
+    router: APIRouter
+    auth: RouterAuth
+
+
 @dataclass
 class LoadedPlugin:
     """One discovered plugin and what loading it produced."""
@@ -55,7 +67,10 @@ class LoadedPlugin:
     install_dir: Path | None
     status: PluginStatus
     error: str | None = None
-    routers: list[APIRouter] = field(default_factory=list)
+    # A change on disk that takes effect on the next start: a newer version
+    # installed over this one, or its directory removed.
+    pending: str | None = None
+    routers: list[PluginRouter] = field(default_factory=list)
     cli_groups: list[click.Group] = field(default_factory=list)
     migrations: list[Path] = field(default_factory=list)
     ui: UiContribution | None = None
@@ -90,17 +105,24 @@ class PluginContext:
         self.config = config
         self.container = container
 
-    def add_router(self, router: APIRouter) -> None:
-        """Mount ``router`` under ``/api/v1/plugins/<name>``.
+    def add_router(self, router: APIRouter, *, auth: RouterAuth = "operator") -> None:
+        """Mount ``router`` under ``/api/v1/plugins/<name>``, behind ``auth``.
 
-        The router's own prefix, if any, applies below that. Authentication is
-        the plugin's to declare per route, as the core routers do; mounting adds
-        none.
+        The router's own prefix, if any, applies below that. ``auth`` is applied
+        to every route on the router: ``"operator"`` (the default) is a
+        deployment operator, as the gateway's management routers require;
+        ``"session"`` is any signed-in dashboard session or the master key;
+        ``"api_key"`` is an API key or the master key, for a route a client
+        program calls; ``"none"`` mounts the router open, for a route that
+        authenticates in some way of its own.
         """
         if not isinstance(router, APIRouter):
             msg = f"plugin {self.name!r} added a router that is not an APIRouter: {router!r}"
             raise PluginError(msg)
-        self._plugin.routers.append(router)
+        if auth not in ("operator", "session", "api_key", "none"):
+            msg = f"plugin {self.name!r} added a router with auth {auth!r}; use operator, session, api_key, or none"
+            raise PluginError(msg)
+        self._plugin.routers.append(PluginRouter(router, auth))
 
     def add_cli(self, group: click.Group) -> None:
         """Attach ``group`` to the ``otari`` command line as a top-level group."""
@@ -144,9 +166,15 @@ class PluginRegistry:
     def record_pending(self, manifest: PluginManifest, package_dir: Path, install_dir: Path) -> LoadedPlugin:
         """Record a plugin installed into the directory since startup.
 
-        It takes effect on the next start; until then it is listed as pending so
-        the dashboard can say so rather than show nothing.
+        It takes effect on the next start. A plugin already running keeps every
+        contribution until then, so an upload of its next version never leaves
+        a half-loaded plugin behind; the running entry only says what is waiting.
+        A plugin not running is listed as pending so the dashboard can say so.
         """
+        current = self.get(manifest.name)
+        if current is not None and current.status != "pending_restart":
+            current.pending = f"version {manifest.version} is installed and loads on the next start"
+            return current
         pending = LoadedPlugin(
             manifest=manifest,
             source="directory",
@@ -159,17 +187,28 @@ class PluginRegistry:
         return pending
 
     def forget(self, name: str) -> None:
-        """Drop a plugin from the listing after its directory was removed.
+        """Note that a plugin's directory was removed.
 
-        A loaded plugin's routes stay mounted until restart; the entry is kept
-        as pending so the listing says a restart is owed.
+        A running plugin keeps every contribution until restart (a router cannot
+        be unmounted, and dropping the rest would leave it half loaded), so the
+        entry stays loaded and says a restart is owed; a pending one is dropped.
         """
         for plugin in self._plugins:
-            if plugin.name == name and plugin.status == "loaded":
-                plugin.status = "pending_restart"
-                plugin.error = "removed; restart the gateway to unload it"
+            if plugin.name == name and plugin.status != "pending_restart":
+                plugin.pending = "removed from disk; unloads on the next start"
                 return
         self._plugins = [plugin for plugin in self._plugins if plugin.name != name]
+
+    def changes_on_disk(self) -> bool:
+        """Whether the plugins directory no longer matches what this process loaded.
+
+        Read from disk rather than from memory, so every worker of a deployment
+        answers the same after one of them took an install or a removal.
+        """
+        discovered, _ = discover_plugins(self.directory)
+        on_disk = {d.manifest.name: d.manifest.version for d in discovered if d.install_dir is not None}
+        loaded = {p.name: p.manifest.version for p in self._plugins if p.install_dir is not None}
+        return on_disk != loaded or any(p.pending for p in self._plugins)
 
     @property
     def summary(self) -> str:
@@ -198,7 +237,27 @@ def _version_tuple(text: str) -> tuple[int, ...]:
     return tuple(numbers)
 
 
-def _resolve_register(manifest: PluginManifest) -> Callable[[PluginContext], None]:
+def _imported_from_elsewhere(manifest: PluginManifest, package_dir: Path) -> Path | None:
+    """Where ``manifest.package`` is already imported from, when that is not ``package_dir``.
+
+    ``import_module`` returns whatever ``sys.modules`` holds, so a package this
+    process imported from another directory (the plugin the CLI attached from
+    the default directory, say, before ``serve`` loaded the configured one)
+    would silently stand in for this plugin's code.
+    """
+    module = sys.modules.get(manifest.package)
+    origin = getattr(module, "__file__", None) if module is not None else None
+    if not origin:
+        return None
+    loaded_from = Path(origin).resolve().parent
+    return None if loaded_from == package_dir.resolve() else loaded_from
+
+
+def _resolve_register(manifest: PluginManifest, package_dir: Path) -> Callable[[PluginContext], None]:
+    elsewhere = _imported_from_elsewhere(manifest, package_dir)
+    if elsewhere is not None:
+        msg = f"package {manifest.package!r} is already imported from {elsewhere}, not from {package_dir}"
+        raise PluginError(msg)
     module = importlib.import_module(manifest.package)
     register = getattr(module, manifest.entrypoint, None)
     if register is None:
@@ -230,12 +289,14 @@ def _load_one(discovered: DiscoveredPlugin, settings: dict[str, Any], container:
             __version__,
         )
     if discovered.install_dir is not None:
-        # The directory holding the package, so the package name imports.
+        # The directory holding the package, so the package name imports. Appended,
+        # not put first: a plugin's tree must not shadow a module the gateway
+        # imports lazily later (its password hashing, its provider SDKs).
         entry = str(discovered.package_dir.parent)
         if entry not in sys.path:
-            sys.path.insert(0, entry)
+            sys.path.append(entry)
     try:
-        register = _resolve_register(manifest)
+        register = _resolve_register(manifest, discovered.package_dir)
         outcome = register(PluginContext(plugin, settings, container))
         if inspect.isawaitable(outcome):
             outcome.close()

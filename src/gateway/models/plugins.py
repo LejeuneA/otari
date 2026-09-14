@@ -18,8 +18,15 @@ DEFAULT_GITHUB_TOPIC = "otari-plugin"
 
 # The name is also a URL segment (``/api/v1/plugins/<name>``, ``/plugins/<name>/ui``),
 # a directory name under the plugins directory, and a suffix on the plugin's
-# Alembic version table, so it is kept to the characters all three accept.
-PLUGIN_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# Alembic version table, so it is kept to the characters all three accept. The
+# length keeps ``alembic_version_<name>`` inside PostgreSQL's 63-byte identifier
+# limit, past which two names would be truncated onto one table.
+PLUGIN_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,46}$")
+# Segments the core already answers under ``/api/v1/plugins/`` and keys the
+# ``plugins:`` block owns: a plugin named one of these would be shadowed or
+# would have no settings block of its own. (``allow_install`` cannot match the
+# pattern, so it needs no entry.)
+RESERVED_PLUGIN_NAMES = frozenset({"install", "upload", "marketplace", "directory", "disabled"})
 PACKAGE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
@@ -59,6 +66,9 @@ class PluginManifest(BaseModel):
     def _valid_name(cls, value: str) -> str:
         if not PLUGIN_NAME_PATTERN.fullmatch(value):
             msg = f"plugin name {value!r} must match {PLUGIN_NAME_PATTERN.pattern}"
+            raise ValueError(msg)
+        if value in RESERVED_PLUGIN_NAMES:
+            msg = f"plugin name {value!r} is reserved"
             raise ValueError(msg)
         return value
 

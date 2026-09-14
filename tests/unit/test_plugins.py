@@ -63,7 +63,7 @@ SEEN_CONFIG = {}
 
 def register(ctx: PluginContext) -> None:
     SEEN_CONFIG.update(ctx.config)
-    ctx.add_router(router)
+    ctx.add_router(router, auth="none")
     ctx.add_cli(probe_cli)
 '''
 
@@ -84,8 +84,10 @@ def write_plugin(root: Path, name: str = "probe", package: str = "probe_plugin",
 
 @pytest.fixture(autouse=True)
 def _forget_probe_packages() -> Generator[None]:
-    """Keep one test's imported plugin package from serving the next."""
+    """Keep one test's imported plugin package, and its sys.path entry, from serving the next."""
+    path_before = list(sys.path)
     yield
+    sys.path[:] = path_before
     for name in [
         module for module in sys.modules if module.startswith("probe_plugin") or module.startswith("broken_plugin")
     ]:
@@ -123,6 +125,20 @@ def test_manifest_parses_and_derives_the_version_table() -> None:
 def test_manifest_rejects_malformed_input(text: str) -> None:
     with pytest.raises(PluginManifestError):
         parse_manifest(text)
+
+
+@pytest.mark.parametrize("name", ["install", "upload", "marketplace", "directory", "disabled"])
+def test_manifest_rejects_a_name_the_core_already_answers_to(name: str) -> None:
+    with pytest.raises(PluginManifestError, match="reserved"):
+        parse_manifest(MANIFEST.replace('name = "probe"', f'name = "{name}"'))
+
+
+def test_manifest_keeps_the_version_table_inside_the_postgres_identifier_limit() -> None:
+    longest = parse_manifest(MANIFEST.replace('name = "probe"', f'name = "{"a" * 47}"'))
+    assert len(longest.version_table) == 63
+
+    with pytest.raises(PluginManifestError):
+        parse_manifest(MANIFEST.replace('name = "probe"', f'name = "{"a" * 48}"'))
 
 
 def test_plugins_config_hands_a_plugin_its_own_block() -> None:
@@ -183,6 +199,17 @@ def test_discovery_keeps_the_first_of_two_plugins_with_one_name(tmp_path: Path) 
     assert [plugin.manifest.name for plugin in found] == ["probe"]
     assert found[0].install_dir == tmp_path / "probe"
     assert any("already provided" in problem.error for problem in problems)
+
+
+def test_discovery_keeps_the_first_of_two_plugins_with_one_package(tmp_path: Path) -> None:
+    write_plugin(tmp_path, name="alpha", package="probe_plugin")
+    write_plugin(tmp_path, name="beta", package="probe_plugin")
+
+    found, problems = discover_plugins(tmp_path)
+
+    assert [plugin.manifest.name for plugin in found] == ["alpha"]
+    assert len(problems) == 1
+    assert "package 'probe_plugin' is already provided by plugin 'alpha'" in problems[0].error
 
 
 def test_discovery_skips_dotfiles_and_ignores_a_missing_directory(tmp_path: Path) -> None:
@@ -252,6 +279,29 @@ def test_a_disabled_plugin_is_listed_and_not_imported(tmp_path: Path) -> None:
     assert registry.loaded() == []
 
 
+def test_a_package_already_imported_from_elsewhere_is_refused_by_name(tmp_path: Path) -> None:
+    # The CLI attaches plugins from the default directory before ``serve`` loads
+    # the configured one; a package imported once stands in for every later
+    # import of that name, so the second load must say so rather than serve it.
+    write_plugin(tmp_path / "first", body="MARK = 'first'\n" + PACKAGE)
+    write_plugin(tmp_path / "second", body="MARK = 'second'\n" + PACKAGE)
+    assert load_plugins(config_for(tmp_path / "first")).get("probe").status == "loaded"  # type: ignore[union-attr]
+
+    plugin = load_plugins(config_for(tmp_path / "second")).get("probe")
+
+    assert plugin is not None
+    assert plugin.status == "failed"
+    assert "already imported from" in (plugin.error or "")
+    assert sys.modules["probe_plugin"].MARK == "first"
+
+
+def test_the_same_package_loads_again_from_the_same_directory(tmp_path: Path) -> None:
+    write_plugin(tmp_path)
+    load_plugins(config_for(tmp_path))
+
+    assert load_plugins(config_for(tmp_path)).get("probe").status == "loaded"  # type: ignore[union-attr]
+
+
 def test_context_refuses_the_wrong_kinds_of_contribution(tmp_path: Path) -> None:
     write_plugin(tmp_path, body="def register(ctx):\n    ctx.add_router(object())")
 
@@ -277,6 +327,50 @@ def test_context_refuses_a_missing_migrations_directory(tmp_path: Path) -> None:
 def test_plugin_context_is_what_register_sees() -> None:
     assert PluginContext.add_router.__doc__ is not None
     assert "/api/v1/plugins/<name>" in PluginContext.add_router.__doc__
+
+
+# --- migrations -------------------------------------------------------------
+
+
+# The probe package, also registering a migrations directory beside it.
+MIGRATING = "from pathlib import Path\n" + PACKAGE.replace(
+    "    ctx.add_cli(probe_cli)\n",
+    '    ctx.add_cli(probe_cli)\n    ctx.add_migrations(Path(__file__).parent / "migrations")\n',
+)
+assert MIGRATING != PACKAGE
+
+
+def test_a_failed_migration_marks_the_plugin_failed_and_its_routes_refuse(tmp_path: Path) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from gateway.api.main import register_routers
+    from gateway.container import build_container
+    from gateway.plugins.migrations import run_plugin_migrations
+
+    package_dir = write_plugin(tmp_path, body=MIGRATING)
+    migrations = package_dir / "migrations"
+    (migrations / "versions").mkdir(parents=True)
+    (migrations / "env.py").write_text("raise RuntimeError('this chain is broken')\n")
+    (migrations / "script.py.mako").write_text("")
+    config = config_for(tmp_path)
+    app = FastAPI()
+    app.state.container = build_container(None)
+    app.state.plugins = load_plugins(config, app.state.container)
+    register_routers(app, config)
+    client = TestClient(app)  # no lifespan: the routes are mounted, the chain has not run
+    assert client.get("/api/v1/plugins/probe/probe").status_code == 200
+
+    failed = run_plugin_migrations(f"sqlite:///{tmp_path}/probe.db", app.state.plugins)
+
+    assert [plugin.name for plugin in failed] == ["probe"]
+    plugin = app.state.plugins.get("probe")
+    assert plugin is not None
+    assert plugin.status == "failed"
+    assert "this chain is broken" in (plugin.error or "")
+    response = client.get("/api/v1/plugins/probe/probe")
+    assert response.status_code == 503
+    assert "this chain is broken" not in response.text
 
 
 # --- archives ---------------------------------------------------------------
@@ -491,3 +585,128 @@ async def test_a_missing_verified_index_is_an_empty_list_not_an_error() -> None:
 
     assert listing.verified == []
     assert listing.errors == []
+
+
+# --- install record, pending beside loaded, the lazy CLI, dropping tables --------
+
+
+def test_install_records_where_a_plugin_came_from_and_refuses_a_downgrade(tmp_path: Path) -> None:
+    from gateway.plugins.archive import read_install_record
+
+    directory = tmp_path / "plugins"
+    v2 = _archive_with_version("2.0.0")
+    installed = install_archive(v2, directory, source="example/probe", ref="v2.0.0")
+    assert installed.install_dir is not None
+    record = read_install_record(installed.install_dir)
+    assert record is not None
+    assert (record["source"], record["ref"], record["version"]) == ("example/probe", "v2.0.0", "2.0.0")
+    assert record["installed_at"]
+
+    with pytest.raises(PluginInstallError, match="older than the installed 2.0.0"):
+        install_archive(_archive_with_version("1.0.0"), directory, source="upload")
+    assert read_install_record(installed.install_dir)["version"] == "2.0.0"  # type: ignore[index]
+
+    forced = install_archive(_archive_with_version("1.0.0"), directory, source="upload", force=True)
+    assert forced.manifest.version == "1.0.0"
+
+
+def _archive_with_version(version: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "probe_plugin/otari-plugin.toml", MANIFEST.replace('version = "1.2.3"', f'version = "{version}"')
+        )
+        archive.writestr("probe_plugin/__init__.py", PACKAGE)
+    return buffer.getvalue()
+
+
+def test_a_running_plugin_keeps_its_contributions_when_a_new_version_is_installed(tmp_path: Path) -> None:
+    write_plugin(tmp_path)
+    registry = load_plugins(config_for(tmp_path))
+    running = registry.get("probe")
+    assert running is not None and running.status == "loaded" and running.routers
+
+    newer = parse_manifest(MANIFEST.replace('version = "1.2.3"', 'version = "2.0.0"'))
+    entry = registry.record_pending(newer, tmp_path / "probe" / "probe_plugin", tmp_path / "probe")
+
+    assert entry is running
+    assert running.status == "loaded" and running.routers
+    assert "2.0.0" in (running.pending or "")
+    assert registry.changes_on_disk() is True
+
+    registry.forget("probe")
+    assert running.status == "loaded" and "unloads" in (running.pending or "")
+
+
+def test_restart_required_is_read_from_disk(tmp_path: Path) -> None:
+    write_plugin(tmp_path)
+    registry = load_plugins(config_for(tmp_path))
+    assert registry.changes_on_disk() is False
+
+    # Another worker installs a second plugin: this process notices from the directory.
+    write_plugin(tmp_path, name="second", package="second_plugin")
+    assert registry.changes_on_disk() is True
+
+
+def test_the_cli_loads_plugins_only_for_their_own_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import click
+    from click.testing import CliRunner
+
+    from gateway import cli as gateway_cli
+
+    marker = tmp_path / "registered"
+    registering = PACKAGE.replace(
+        "def register(ctx: PluginContext) -> None:\n",
+        f"def register(ctx: PluginContext) -> None:\n    open({str(marker)!r}, 'w').write('x')\n",
+    )
+    assert registering != PACKAGE
+    write_plugin(tmp_path, body=registering)
+    config_path = tmp_path / "config.yml"
+    config_path.write_text(f"master_key: k\nplugins:\n  directory: {tmp_path}\n")
+
+    sys.modules.pop("probe_plugin", None)
+    group = gateway_cli._OtariCli(name="otari")
+    group.add_command(click.Command("noop", callback=lambda: None))
+    monkeypatch.setattr(sys, "argv", ["otari", "noop", "-c", str(config_path)])
+    assert CliRunner().invoke(group, ["noop"]).exit_code == 0
+    assert not marker.exists(), "a built-in command must not import plugins"
+
+    monkeypatch.setattr(sys, "argv", ["otari", "probe", "-c", str(config_path)])
+    assert group.get_command(click.Context(group), "probe-cli") is not None
+    assert marker.exists()
+
+
+def test_remove_drop_tables_runs_the_chain_back_and_drops_the_version_table(tmp_path: Path) -> None:
+    import sqlite3
+
+    from gateway.plugins.migrations import drop_plugin_tables, run_plugin_migrations
+
+    package_dir = write_plugin(tmp_path, body=MIGRATING)
+    migrations = package_dir / "migrations"
+    (migrations / "versions").mkdir(parents=True)
+    (migrations / "env.py").write_text(
+        "from alembic import context\nfrom gateway.plugins.migrations import run_plugin_env\n"
+        "run_plugin_env(context, None, 'probe')\n"
+    )
+    (migrations / "script.py.mako").write_text("")
+    (migrations / "versions" / "0001_rows.py").write_text(
+        "import sqlalchemy as sa\nfrom alembic import op\n"
+        "revision = '0001'\ndown_revision = None\n"
+        "def upgrade():\n    op.create_table('probe_rows', sa.Column('id', sa.Integer, primary_key=True))\n"
+        "def downgrade():\n    op.drop_table('probe_rows')\n"
+    )
+    registry = load_plugins(config_for(tmp_path))
+    plugin = registry.get("probe")
+    assert plugin is not None and plugin.migrations
+    url = f"sqlite:///{tmp_path / 'drop.db'}"
+    run_plugin_migrations(url, [plugin])
+    with sqlite3.connect(tmp_path / "drop.db") as db:
+        before = {row[0] for row in db.execute("select name from sqlite_master where type='table'")}
+    assert plugin.manifest.version_table in before
+
+    drop_plugin_tables(url, plugin)
+
+    with sqlite3.connect(tmp_path / "drop.db") as db:
+        after = {row[0] for row in db.execute("select name from sqlite_master where type='table'")}
+    assert plugin.manifest.version_table not in after
+    assert not (before - {plugin.manifest.version_table}) & after

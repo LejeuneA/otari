@@ -53,8 +53,17 @@ async def guarded_probe() -> dict[str, str]:
     return {"probe": "guarded"}
 
 
+admin = APIRouter(prefix="/admin")
+
+
+@admin.get("/status")
+async def admin_status() -> dict[str, str]:
+    return {"probe": "admin"}
+
+
 def register(ctx: PluginContext) -> None:
-    ctx.add_router(router)
+    ctx.add_router(router, auth="none")
+    ctx.add_router(admin)
 """
 
 HEADERS = {"Authorization": "Bearer test-master-key"}
@@ -110,9 +119,15 @@ def test_a_plugin_route_is_served_under_the_plugin_prefix(plugin_client: TestCli
 
     assert open_response.status_code == 200
     assert open_response.json() == {"probe": "open"}
-    # Mounting adds no authentication; the plugin's own dependency does.
+    # A router mounted with auth="none" adds nothing; the plugin's own dependency does.
     assert guarded_without.status_code == 401
     assert guarded_with.status_code == 200
+    # A router mounted with the default is an operator's: refused without a credential.
+    admin_without = plugin_client.get(f"{API_ROOT}/plugins/probe/admin/status")
+    admin_with = plugin_client.get(f"{API_ROOT}/plugins/probe/admin/status", headers=HEADERS)
+    assert admin_without.status_code == 401
+    assert admin_with.status_code == 200
+    assert admin_with.json() == {"probe": "admin"}
 
 
 def test_a_plugin_page_is_served_as_static_files_and_may_be_framed(plugin_client: TestClient) -> None:
@@ -143,7 +158,7 @@ def test_the_listing_is_operator_only_and_describes_the_plugin(plugin_client: Te
     assert plugin["name"] == "probe"
     assert plugin["status"] == "loaded"
     assert plugin["source"] == "directory"
-    assert plugin["routes"] == 2
+    assert plugin["routes"] == 3
     assert plugin["ui"] == {"label": "Probe", "url": "/plugins/probe/ui/"}
     assert plugin["api_prefix"] == "/plugins/probe"
 
@@ -216,8 +231,10 @@ def test_removing_a_directory_plugin_deletes_it_and_reports_the_restart(
     listing = installing_client.get(f"{API_ROOT}/plugins", headers=HEADERS).json()
     assert listing["restart_required"] is True
     (plugin,) = listing["plugins"]
-    assert plugin["status"] == "pending_restart"
-    assert "restart" in plugin["error"]
+    # Still loaded: a running plugin keeps every contribution until restart, and
+    # the entry says what is waiting.
+    assert plugin["status"] == "loaded"
+    assert "next start" in plugin["pending"]
     assert installing_client.delete(f"{API_ROOT}/plugins/nowhere", headers=HEADERS).status_code == 404
     # Deleting it again finds the directory gone: a conflict naming the restart, not a 500.
     again = installing_client.delete(f"{API_ROOT}/plugins/probe", headers=HEADERS)

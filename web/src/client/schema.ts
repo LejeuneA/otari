@@ -2918,6 +2918,8 @@ export interface paths {
         /**
          * Upload Plugin
          * @description Install a plugin from an uploaded zip or tar.gz. It loads on the next start.
+         *
+         *     ``force`` installs an archive whose version is older than the installed one.
          */
         post: operations["plugins-upload_plugin"];
         delete?: never;
@@ -7324,6 +7326,12 @@ export interface components {
         /** InstallPluginRequest */
         InstallPluginRequest: {
             /**
+             * Force
+             * @description Install even when the version is older than the installed one.
+             * @default false
+             */
+            force: boolean;
+            /**
              * Ref
              * @description Branch, tag, or commit; the default branch when unset.
              */
@@ -7343,6 +7351,21 @@ export interface components {
              */
             restart_required: boolean;
         };
+        /**
+         * InstallRecord
+         * @description Where a directory plugin came from, as recorded at install time.
+         */
+        InstallRecord: {
+            /** Installed At */
+            installed_at?: string | null;
+            /** Ref */
+            ref?: string | null;
+            /**
+             * Source
+             * @description 'upload', or the GitHub repository as owner/name.
+             */
+            source: string;
+        };
         /** InstalledPlugin */
         InstalledPlugin: {
             /**
@@ -7361,6 +7384,8 @@ export interface components {
             error?: string | null;
             /** Homepage */
             homepage?: string | null;
+            /** @description Provenance, for a plugin installed from an archive. */
+            installed?: components["schemas"]["InstallRecord"] | null;
             /**
              * Migrations
              * @description Whether the plugin owns database migrations.
@@ -7368,6 +7393,11 @@ export interface components {
             migrations: boolean;
             /** Name */
             name: string;
+            /**
+             * Pending
+             * @description A change on disk that takes effect on the next start, when one is waiting.
+             */
+            pending?: string | null;
             /**
              * Routes
              * @description How many routes the plugin registered.
@@ -17152,7 +17182,10 @@ export interface operations {
     };
     "plugins-upload_plugin": {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Install even when the version is older than the installed one. */
+                force?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
