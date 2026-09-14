@@ -26,6 +26,7 @@ from fastapi import FastAPI
 
 from gateway.core.config import GatewayConfig
 from gateway.main import _REFRESHER_STOP_TIMEOUT_SECONDS, _create_lifespan, _stop_refresher, _stop_refreshers
+from gateway.plugins import PluginRegistry
 
 
 async def _absorbs_cancellation() -> None:
@@ -149,6 +150,8 @@ async def test_lifespan_shutdown_completes_despite_a_stuck_refresher(
     lifespan = _create_lifespan()
     app = FastAPI()
     app.state.config = config
+    # create_app sets this before the lifespan runs; the lifespan reads it.
+    app.state.plugins = PluginRegistry(tmp_path / "plugins", [], [])
 
     # No asyncio.timeout wrapper: if shutdown regresses this hangs, and the
     # suite-wide pytest timeout reports it. A short bound here would be

@@ -14,6 +14,7 @@ import shutil
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 
 import httpx
@@ -107,13 +108,19 @@ def _extract_tar(data: bytes, root: Path) -> None:
 
 
 def _extract(data: bytes, root: Path) -> None:
-    if data[:4] == b"PK\x03\x04":
-        _extract_zip(data, root)
-    elif data[:2] == b"\x1f\x8b" or data[257:262] == b"ustar":
-        _extract_tar(data, root)
-    else:
-        msg = "archive is neither a zip nor a gzipped tar"
-        raise PluginInstallError(msg)
+    try:
+        if data[:4] == b"PK\x03\x04":
+            _extract_zip(data, root)
+        elif data[:2] == b"\x1f\x8b" or data[257:262] == b"ustar":
+            _extract_tar(data, root)
+        else:
+            msg = "archive is neither a zip nor a gzipped tar"
+            raise PluginInstallError(msg)
+    except (zipfile.BadZipFile, tarfile.TarError, zlib.error, EOFError) as error:
+        # A member that is truncated or fails its checksum surfaces here, after
+        # the header checks above passed.
+        msg = f"archive could not be unpacked: {error}"
+        raise PluginInstallError(msg) from error
 
 
 def _replace_directory(staged: Path, target: Path) -> None:
@@ -169,6 +176,9 @@ def remove_installed(install_dir: Path, directory: Path) -> None:
     root = directory.resolve()
     if resolved == root or root not in resolved.parents:
         msg = f"{install_dir} is not inside the plugins directory {directory}"
+        raise PluginInstallError(msg)
+    if not resolved.is_dir():
+        msg = f"{install_dir} is already gone; restart the gateway to unload the plugin"
         raise PluginInstallError(msg)
     shutil.rmtree(resolved)
 

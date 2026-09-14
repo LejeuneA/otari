@@ -362,6 +362,19 @@ def test_install_archive_refuses_an_archive_with_no_manifest(tmp_path: Path) -> 
     assert not any((tmp_path / "plugins").iterdir())
 
 
+def test_install_archive_reports_a_corrupt_member(tmp_path: Path) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("probe_plugin/otari-plugin.toml", MANIFEST)
+    data = bytearray(buffer.getvalue())
+    # Flip a byte of the stored member's data so its CRC no longer matches.
+    data[30 + len("probe_plugin/otari-plugin.toml")] ^= 0xFF
+
+    with pytest.raises(PluginInstallError, match="could not be unpacked"):
+        install_archive(bytes(data), tmp_path / "plugins")
+    assert not any((tmp_path / "plugins").iterdir())
+
+
 def test_install_archive_refuses_junk(tmp_path: Path) -> None:
     with pytest.raises(PluginInstallError, match="neither"):
         install_archive(b"hello", tmp_path / "plugins")
@@ -379,6 +392,8 @@ def test_remove_installed_stays_inside_the_plugins_directory(tmp_path: Path) -> 
         remove_installed(directory, directory)
     remove_installed(directory / "probe", directory)
     assert not (directory / "probe").exists()
+    with pytest.raises(PluginInstallError, match="already gone"):
+        remove_installed(directory / "probe", directory)
 
 
 def test_github_archive_url_validates_its_inputs() -> None:
@@ -466,3 +481,13 @@ async def test_marketplace_skips_a_source_that_is_turned_off() -> None:
     listing = await marketplace.listing()
 
     assert listing.verified == [] and listing.community == [] and listing.errors == []
+
+
+@pytest.mark.asyncio
+async def test_a_missing_verified_index_is_an_empty_list_not_an_error() -> None:
+    marketplace = Marketplace(MarketplaceConfig(), transport=fake_github(index_status=404))
+
+    listing = await marketplace.listing()
+
+    assert listing.verified == []
+    assert listing.errors == []

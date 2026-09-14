@@ -98,6 +98,7 @@ const STANDALONE_SURFACES = [
   "models",
   "organizations",
   "playground",
+  "plugins",
   "pricing",
   "providers",
   "routing",

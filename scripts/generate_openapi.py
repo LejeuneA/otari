@@ -22,6 +22,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from gateway.core.config import GatewayConfig
 from gateway.main import create_app
+from gateway.models.plugins import PluginsConfig
 
 
 def generate_openapi_spec() -> dict[str, object]:
@@ -45,6 +46,9 @@ def generate_openapi_spec() -> dict[str, object]:
             web_search_provider="tavily",
             web_search_provider_api_key="openapi-generation-placeholder",
             web_search_backend_token="openapi-generation-placeholder",
+            # An empty plugins directory, so a plugin dropped into ./otari-plugins
+            # on this machine is neither run here nor written into the contract.
+            plugins=PluginsConfig(directory=str(Path(tmpdir) / "plugins")),
         )
         app = create_app(config)
         return cast(dict[str, object], app.openapi())

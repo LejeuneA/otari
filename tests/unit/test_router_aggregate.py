@@ -9,6 +9,7 @@ twice is a failure rather than a silent no-op.
 """
 
 from collections import Counter
+from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
@@ -17,6 +18,7 @@ from gateway.api.main import _register_contributed_routers, _register_core_route
 from gateway.api.routes import hosted_mode, otlp
 from gateway.container import RouterContribution, build_container
 from gateway.core.config import API_ROOT, OTLP_ROOT, GatewayConfig
+from gateway.plugins import PluginRegistry
 
 Operations = Counter[tuple[str, str]]
 
@@ -45,6 +47,11 @@ def _standalone() -> GatewayConfig:
     )
 
 
+def _no_plugins() -> PluginRegistry:
+    """What create_app leaves on app.state when nothing is discovered."""
+    return PluginRegistry(Path("otari-plugins"), [], [])
+
+
 def _mounted_on(aggregate: APIRouter) -> Operations:
     """Mount the gateway onto ``aggregate`` and report the operations that reach an app."""
     config = _standalone()
@@ -67,6 +74,7 @@ def test_a_prefix_on_the_aggregate_moves_every_route() -> None:
 def test_register_routers_hands_the_app_the_aggregate_and_the_otlp_sibling() -> None:
     app = FastAPI()
     app.state.container = build_container(None)
+    app.state.plugins = _no_plugins()
 
     register_routers(app, _standalone())
 
@@ -79,6 +87,7 @@ def _mount_order(config: GatewayConfig) -> list[str]:
     """Every operation the app serves, in the order Starlette will try to match it."""
     app = FastAPI()
     app.state.container = build_container(config.bootstrap)
+    app.state.plugins = _no_plugins()
     register_routers(app, config)
     return [route.path for route in app.routes if isinstance(route, APIRoute)]
 
@@ -122,6 +131,7 @@ def test_a_contributed_route_is_matched_before_a_mode_stub() -> None:
 
     app = FastAPI()
     app.state.container = container
+    app.state.plugins = _no_plugins()
     register_routers(app, GatewayConfig(mode="hosted", bootstrap=None))
     routes = [route for route in app.routes if isinstance(route, APIRoute)]
 
@@ -137,7 +147,6 @@ def test_a_contributed_route_is_matched_before_a_mode_stub() -> None:
     assert stubs, "no mode stub was mounted, so this check would hold vacuously"
     assert served, "nothing else was mounted, so this check would hold vacuously"
     assert min(stubs) > max(served), (
-        "a mode stub is mounted ahead of a route the deployment actually serves, "
-        "so the stub will answer for it"
+        "a mode stub is mounted ahead of a route the deployment actually serves, so the stub will answer for it"
     )
     assert probe < min(stubs), "the stub is ahead of a contributed route, so it will answer for it"

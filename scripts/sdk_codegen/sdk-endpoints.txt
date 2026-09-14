@@ -110,6 +110,12 @@ PUT /api/v1/playground/favorite-models                          # session-author
 GET /api/v1/aliases                                 # not yet wrapped
 POST /api/v1/aliases                                # not yet wrapped
 DELETE /api/v1/aliases/{name}                       # not yet wrapped
+# Plugins: the operator listing, the marketplace, and the archive installer
+GET /api/v1/plugins                                 # not yet wrapped
+GET /api/v1/plugins/marketplace                     # not yet wrapped
+POST /api/v1/plugins/upload                         # not yet wrapped
+POST /api/v1/plugins/install                        # not yet wrapped
+DELETE /api/v1/plugins/{name}                       # not yet wrapped
 # Provider credentials (runtime provider management)
 GET /api/v1/provider-credentials                    # not yet wrapped
 POST /api/v1/provider-credentials                   # not yet wrapped

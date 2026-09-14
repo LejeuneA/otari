@@ -27,9 +27,9 @@ yourself.
 **From the command line**, on the machine running the gateway:
 
 ```bash
-otari plugins install mozilla-ai/otari-agent-gates          # a GitHub repository, default branch
-otari plugins install mozilla-ai/otari-agent-gates --ref v0.1.0
-otari plugins install ./otari-agent-gates.zip                # a local archive
+otari plugins install njbrake/warden                # a GitHub repository, default branch
+otari plugins install njbrake/warden --ref v0.1.0
+otari plugins install ./otari-warden.zip             # a local archive
 otari plugins list
 otari plugins remove agent-gates
 ```

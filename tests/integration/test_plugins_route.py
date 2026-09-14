@@ -219,3 +219,7 @@ def test_removing_a_directory_plugin_deletes_it_and_reports_the_restart(
     assert plugin["status"] == "pending_restart"
     assert "restart" in plugin["error"]
     assert installing_client.delete(f"{API_ROOT}/plugins/nowhere", headers=HEADERS).status_code == 404
+    # Deleting it again finds the directory gone: a conflict naming the restart, not a 500.
+    again = installing_client.delete(f"{API_ROOT}/plugins/probe", headers=HEADERS)
+    assert again.status_code == 409
+    assert "restart" in again.json()["detail"]

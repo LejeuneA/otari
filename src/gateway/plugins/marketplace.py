@@ -110,6 +110,11 @@ class Marketplace:
             return
         try:
             response = await client.get(url)
+            if response.status_code == 404:
+                # No index published at that address yet: an empty verified
+                # list, not a failure the dashboard has to explain on every visit.
+                logger.info("Marketplace: no verified index is published at %s", url)
+                return
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as error:
