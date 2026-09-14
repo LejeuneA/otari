@@ -309,6 +309,15 @@ def test_router_contributions_keep_their_order() -> None:
     assert container.router_contributions() == (first, second)
 
 
+def test_a_router_contribution_with_a_blank_capability_is_refused() -> None:
+    container = Container()
+
+    with pytest.raises(ContainerError, match="blank capability"):
+        container.contribute_router(RouterContribution(capability="   ", router=APIRouter()))
+
+    assert container.router_contributions() == ()
+
+
 def test_the_summary_calls_an_ungated_contribution_ungated_rather_than_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -361,6 +370,15 @@ def test_a_duplicate_background_task_name_is_refused_and_the_first_stands() -> N
     assert container.background_task_contributions() == (first,)
 
 
+def test_a_background_task_contribution_with_a_blank_name_is_refused() -> None:
+    container = Container()
+
+    with pytest.raises(ContainerError, match="blank name"):
+        container.contribute_background_task(BackgroundTaskContribution(name="   ", start=_never_runs))
+
+    assert container.background_task_contributions() == ()
+
+
 def _chain(name: str, version_table: str) -> MigrationContribution:
     return MigrationContribution(name=name, script_location=f"/plugins/{name}/alembic", version_table=version_table)
 
@@ -385,12 +403,31 @@ def test_a_migration_contribution_may_not_claim_the_core_version_table() -> None
     assert container.migration_contributions() == ()
 
 
+def test_a_migration_contribution_may_not_claim_the_core_version_table_in_another_case() -> None:
+    container = Container()
+
+    with pytest.raises(MigrationContributionError, match="Otari's own version table"):
+        container.contribute_migrations(_chain("greedy", "ALEMBIC_VERSION"))
+
+    assert container.migration_contributions() == ()
+
+
 def test_two_migration_contributions_may_not_share_a_version_table() -> None:
     container = Container()
     container.contribute_migrations(_chain("one", "shared_alembic_version"))
 
     with pytest.raises(MigrationContributionError, match="already held by 'one'"):
         container.contribute_migrations(_chain("two", "shared_alembic_version"))
+
+    assert [contribution.name for contribution in container.migration_contributions()] == ["one"]
+
+
+def test_two_migration_contributions_sharing_a_version_table_in_another_case_collide() -> None:
+    container = Container()
+    container.contribute_migrations(_chain("one", "shared_alembic_version"))
+
+    with pytest.raises(MigrationContributionError, match="already held by 'one'"):
+        container.contribute_migrations(_chain("two", "Shared_Alembic_Version"))
 
     assert [contribution.name for contribution in container.migration_contributions()] == ["one"]
 

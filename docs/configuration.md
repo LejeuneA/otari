@@ -340,16 +340,22 @@ Leaving `capability` as `None` mounts the router with no entitlement
 dependency. That is the right answer for a contribution that is simply present
 once the module is installed, which is what a plugin is: there is no licensing
 decision to make, and inventing a capability name only to satisfy the gate
-would invent one. Entitlement is not authentication either way, so each
-contributed route still declares the credential it needs, the way Otari's own
-routes do.
+would invent one. `None` is the only value that means ungated: a blank
+capability is refused when the router is contributed, rather than mounting the
+router behind a gate nothing can satisfy. Entitlement is not authentication
+either way, so each contributed route still declares the credential it needs,
+the way Otari's own routes do.
 
 ### Contributing a background task
 
 A background task is a coroutine function that receives the gateway config.
 Otari starts it beside its own periodic refreshers, in every mode, and cancels
-it at shutdown under the same bounded wait, so a task that never yields cannot
-hold the process open:
+it at shutdown under the same bounded wait, so a task that keeps running
+through cancellation is dropped rather than waited on. The task has to yield to
+the event loop periodically for that to hold: a coroutine that never awaits
+blocks the loop itself, and no timeout can run while it does.
+
+A task registers like this:
 
 ```python
 import asyncio

@@ -21,8 +21,11 @@ version_table = config.attributes.get("version_table")
 
 def run_migrations_online() -> None:
     connectable = create_engine(database_url, poolclass=pool.NullPool)
+    # Passing ``version_table=None`` would override Alembic's default rather
+    # than select it, so the keyword is omitted when the attribute is absent.
+    configured = {} if version_table is None else {"version_table": version_table}
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=None, version_table=version_table)
+        context.configure(connection=connection, target_metadata=None, **configured)
         with context.begin_transaction():
             context.run_migrations()
 

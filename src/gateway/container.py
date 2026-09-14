@@ -108,9 +108,12 @@ class BackgroundTaskContribution:
 
     The lifespan (``gateway.main``) schedules ``start(config)`` as a task after
     Otari's own refreshers, in every mode, and stops it under the same shared
-    cancellation bound, so a contributed task that ignores cancellation cannot
-    hang shutdown. ``name`` labels the task in the startup summary and in the
-    shutdown log, and is unique per container.
+    cancellation bound, so a contributed task that keeps running through
+    cancellation is dropped rather than waited on. That bound only holds for a
+    task that yields to the event loop: one that never awaits blocks the loop,
+    and the timeout cannot run while it does. ``name`` labels the task in the
+    startup summary and in the shutdown log, is unique per container, and may
+    not be blank.
 
     ``start`` is a coroutine function, not the coroutine itself: a coroutine
     object built at register time in a container that never runs (as the test
@@ -239,7 +242,18 @@ class Container:
         return cast(T, factory(session))
 
     def contribute_router(self, contribution: RouterContribution) -> None:
-        """Record a router this build mounts on top of Otari's own."""
+        """Record a router this build mounts on top of Otari's own.
+
+        Raises:
+            ContainerError: If ``capability`` is set but blank. Only ``None``
+                means ungated; a blank name would mount the router behind a
+                gate no deployment can be entitled to, which reads as a 404
+                rather than as the registration mistake it is.
+
+        """
+        if contribution.capability is not None and not contribution.capability.strip():
+            msg = "A router contribution has a blank capability; use None to mount it ungated"
+            raise ContainerError(msg)
         self._router_contributions.append(contribution)
 
     def router_contributions(self) -> tuple[RouterContribution, ...]:
@@ -250,12 +264,17 @@ class Container:
         """Record a background task the lifespan runs beside Otari's own refreshers.
 
         Raises:
+            ContainerError: If the name is blank, which would label the task
+                with nothing in the shutdown log.
             DuplicateBackgroundTaskError: If a task of the same name is already
                 contributed. Two tasks sharing a name would be indistinguishable
                 in the shutdown log, and a bootstrap registering the same worker
                 twice is a mistake worth refusing at startup.
 
         """
+        if not contribution.name.strip():
+            msg = "A background task contribution has a blank name"
+            raise ContainerError(msg)
         if contribution.name in self._background_task_contributions:
             raise DuplicateBackgroundTaskError(contribution.name)
         self._background_task_contributions[contribution.name] = contribution
@@ -274,21 +293,24 @@ class Container:
         Raises:
             MigrationContributionError: If a field is blank, if the contribution
                 claims Otari's own version table, or if it claims a version
-                table or name another contribution already holds.
+                table or name another contribution already holds. Version
+                tables are compared without regard to case, because the
+                databases Otari runs on do not all distinguish them.
 
         """
         for field in ("name", "script_location", "version_table"):
             if not getattr(contribution, field).strip():
                 msg = f"Migration contribution {contribution.name!r} has a blank {field}"
                 raise MigrationContributionError(msg)
-        if contribution.version_table == CORE_VERSION_TABLE:
+        version_table = contribution.version_table.casefold()
+        if version_table == CORE_VERSION_TABLE.casefold():
             msg = (
                 f"Migration contribution {contribution.name!r} claims {CORE_VERSION_TABLE!r}, "
                 "which is Otari's own version table; a contributed chain stamps a table of its own"
             )
             raise MigrationContributionError(msg)
         for recorded in self._migration_contributions:
-            if recorded.version_table == contribution.version_table:
+            if recorded.version_table.casefold() == version_table:
                 msg = (
                     f"Migration contribution {contribution.name!r} claims version table "
                     f"{contribution.version_table!r}, already held by {recorded.name!r}"
@@ -460,7 +482,10 @@ def build_container(bootstrap_selector: str | None = None) -> Container:
         raise BootstrapError(msg)
     rebound = sorted(_port_name(port) for port, factory in container.bindings() if defaults.get(port) is not factory)
     container.summary = f"{bootstrap_selector} rebound {', '.join(rebound) or 'no ports'}"
-    contributed = ", ".join(contribution.capability or "ungated" for contribution in container.router_contributions())
+    contributed = ", ".join(
+        "ungated" if contribution.capability is None else contribution.capability
+        for contribution in container.router_contributions()
+    )
     if contributed:
         container.summary += f", contributed routers for {contributed}"
     contributed_tasks = ", ".join(contribution.name for contribution in container.background_task_contributions())
