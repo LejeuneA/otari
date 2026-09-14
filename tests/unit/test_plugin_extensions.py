@@ -78,6 +78,7 @@ def test_manifest_pages_carry_placement_and_the_short_form_normalizes() -> None:
     manifest = parse_manifest(
         _manifest(
             """
+contributes = ["ui"]
 [[plugin.pages]]
 id = "runs"
 label = "Runs"
@@ -106,7 +107,7 @@ section = "none"
         "#/runs",
     )
 
-    short = parse_manifest(_manifest('[plugin.ui]\nlabel = "Probe"'))
+    short = parse_manifest(_manifest('contributes = ["ui"]\n[plugin.ui]\nlabel = "Probe"'))
     assert [(page.id, page.label, page.section) for page in short.pages] == [("index", "Probe", "extend")]
 
 
