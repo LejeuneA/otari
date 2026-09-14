@@ -472,7 +472,10 @@ export function ToolsGuardrailsPage({ only }: { only?: ToolServiceName } = {}) {
               <>
                 {isOperator ? (
                   <LocalGuardrailsCard
-                    docsHref={toolsDocs(
+                    // guardrails.md rather than tools.md: this is the one card
+                    // on the page whose manual page is the other document.
+                    docsHref={docsSourceHref(
+                      "guardrails.md",
                       "defining-a-guardrail-otari-runs-itself",
                     )}
                   />
