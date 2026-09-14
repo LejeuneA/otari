@@ -94,6 +94,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The local-model guardrails. 31 of the 40 guardrails run a model in this
+# process and need torch, transformers or onnxruntime; the other 9 are hosted
+# APIs the base install already reaches, so the default stays light. Built from
+# upstream's own `all` rather than one extra per upstream family: those 31 span
+# seven of them (huggingface, gliner, lettucedetect, flowjudge, onnx, llamafile,
+# encoderfile), and an operator who wants local models is not served by picking
+# among them. `all` also pulls the light hosted extras, which is harmless. The
+# ceiling tracks the pin above because both resolve the same distribution; the
+# catalog publishes this extra's name as `missing_extra` and the runner logs it,
+# so `tests/unit/test_guardrails_local_extra.py` keeps the two in step. Absent
+# from the published image, which builds with `uv sync --frozen --no-dev` and
+# takes no extras, the same as `ocr`.
+guardrails-local = [
+    "any-guardrail[all]>=0.7.7,<0.8.0",
+]
 # Optional OCR backend for image/scanned-PDF text extraction. Heavy (onnxruntime),
 # so it's opt-in; the gateway degrades to vision-describe / drop when absent.
 ocr = [
