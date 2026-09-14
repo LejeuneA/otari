@@ -12,6 +12,34 @@ docker compose --profile guardrails up
 
 This starts the `anyguardrails` container (which wraps [any-guardrail](https://github.com/mozilla-ai/any-guardrail)) and the `encoderfile` container that backs the default prompt-injection profile.
 
+## Local-model guardrails
+
+Otari can also build a guardrail and run it in its own process, with no second
+container. Most of the hosted-API guardrails work on a plain install, because
+they are an HTTP call with a vendor key. The rest load a model here, which means
+torch, transformers or onnxruntime. Those are heavy, so they sit behind an
+opt-in extra:
+
+```bash
+pip install "gateway[guardrails-local]"
+```
+
+From a source checkout, `uv sync --extra guardrails-local` does the same. This
+is the only extra to install: it covers every backend, so there is nothing to
+pick between.
+
+`GET /api/v1/tool-settings/guardrails/catalog` says which guardrails the
+packages installed here can actually run. One whose packages are absent reports
+`runnable: false` and names `guardrails-local` as `missing_extra`, so a picker
+can say what is missing rather than letting the request fail later. Listing the
+catalog loads no model, so the answer is cheap on a build without the extra.
+
+The published Docker image does not carry the extra. It is built with
+`uv sync --frozen --no-dev`, which takes no extras, the same as the `ocr` extra
+in [Files](files.md). A Docker operator who wants local-model guardrails either
+keeps pointing Otari at a remote guardrails backend, as above, or builds an
+image of their own.
+
 ## Using a guardrail
 
 Add a `guardrails` field to your request:
