@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from gateway.core.config import API_ROOT, GatewayConfig
 from gateway.services.guardrail_runner import reset_guardrail_runner
+from gateway.services.guardrail_store_service import cached_guardrails, reset_guardrail_cache
 from gateway.services.secret_box import generate_secret_key
 
 _LAKERA_KEY = "lakera-live-9876"
@@ -43,8 +44,10 @@ def test_config(postgres_url: str) -> GatewayConfig:
 @pytest.fixture(autouse=True)
 def _clean_runner() -> Iterator[None]:
     reset_guardrail_runner()
+    reset_guardrail_cache()
     yield
     reset_guardrail_runner()
+    reset_guardrail_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -548,3 +551,56 @@ def test_a_masked_patch_still_refuses_a_row_whose_key_was_lost(
 
     assert resp.status_code == 400
     assert "OTARI_SECRET_KEY" in resp.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# A committed write reaches this worker's overlay at once
+# --------------------------------------------------------------------------- #
+#
+# The overlay is what the request path resolves against, so a write that only
+# evicted the runner would leave the definition invisible until the next TTL
+# tick: an operator would add a guardrail, send a request, and watch it do
+# nothing for up to thirty seconds.
+
+
+def test_a_created_guardrail_is_resolvable_immediately(
+    client: TestClient, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_any_guardrail(monkeypatch)
+    assert cached_guardrails() == {}
+
+    _create(client, master_key_header)
+
+    assert cached_guardrails()["prompt-injection"] is not None
+
+
+def test_disabling_a_guardrail_caches_it_as_unrunnable_rather_than_absent(
+    client: TestClient, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Present but None is what makes it keep shadowing a config guardrail."""
+    _stub_any_guardrail(monkeypatch)
+    _create(client, master_key_header, name="from-file")
+
+    response = client.patch(
+        f"{API_ROOT}/guardrail-credentials/from-file",
+        json={"enabled": False},
+        headers=master_key_header,
+    )
+
+    assert response.status_code == 200
+    assert "from-file" in cached_guardrails()
+    assert cached_guardrails()["from-file"] is None
+
+
+def test_deleting_a_guardrail_hands_its_name_back_to_the_config_file(
+    client: TestClient, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deleting is the one write that does un-shadow, unlike disabling."""
+    _stub_any_guardrail(monkeypatch)
+    _create(client, master_key_header, name="from-file")
+    assert "from-file" in cached_guardrails()
+
+    response = client.delete(f"{API_ROOT}/guardrail-credentials/from-file", headers=master_key_header)
+
+    assert response.status_code == 204
+    assert "from-file" not in cached_guardrails(), "the config entry below it is reachable again"

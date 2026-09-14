@@ -42,6 +42,7 @@ from gateway.services.guardrail_store_service import (
     list_guardrails,
     readable_secret_names,
     reencrypt_guardrails,
+    refresh_guardrail_cache,
     save_guardrail,
 )
 from gateway.services.guardrails import GuardrailsNotReachableError
@@ -224,20 +225,32 @@ async def _commit(db: AsyncSession, *, conflict_detail: str | None = None) -> No
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error") from None
 
 
-def _apply_write(name: str) -> None:
+async def _apply_write(db: AsyncSession, *names: str) -> None:
     """Make a committed guardrail change take effect on this worker.
 
-    The runner caches what it builds, keyed on the arguments it was built with,
-    so an edited guardrail would otherwise keep answering from the instance made
-    out of its old ones. Evicting also releases a local model the old arguments
-    had loaded, which nothing else would: the runner drops an entry only when no
-    profile resolves to it (otari#1119).
+    Two caches, because they hold different things. The runner holds built
+    guardrails keyed on the arguments they were built from, so an edited one
+    would otherwise keep answering from the instance made out of its old ones;
+    evicting also releases a local model those arguments had loaded, which
+    nothing else would, since the runner drops an entry only when no profile
+    resolves to it (otari#1119). The overlay holds the definitions themselves,
+    and refreshing it is what makes the change visible to the next request
+    instead of the next TTL tick.
 
-    Sibling workers keep their own instance until they restart, the same
-    cross-worker gap the provider overlay has. A definition is deployment
-    config, so that is the expected shape rather than a surprise.
+    Takes the names as varargs so re-encryption, which touches every row, evicts
+    each and reads the table once rather than once per row.
+
+    Sibling workers converge within the overlay TTL, and re-keying a profile
+    there releases what the old arguments built. The write is already committed
+    by the time this runs, so a failed refresh is logged rather than turned into
+    a 500: this worker is briefly behind, and the next tick fixes it.
     """
-    get_guardrail_runner().evict(name)
+    for name in names:
+        get_guardrail_runner().evict(name)
+    try:
+        await refresh_guardrail_cache(db)
+    except SQLAlchemyError:
+        logger.warning("Guardrail overlay refresh failed after writing %s; converges within TTL", names)
 
 
 _UNDECRYPTABLE = (
@@ -298,8 +311,7 @@ async def reencrypt_stored_guardrail_secrets(
     # holds is stale. Evicted anyway: a row that was unreadable before is
     # readable now, and the instance built from the old arguments is the one
     # thing that would keep it looking broken.
-    for row in rows:
-        _apply_write(row.name)
+    await _apply_write(db, *(row.name for row in rows))
     return ReencryptGuardrailsResponse(reencrypted=reencrypted, unreadable=unreadable)
 
 
@@ -336,7 +348,7 @@ async def create_guardrail(
             "Stored guardrail '%s' shadows the config.yml guardrail of the same name; the stored entry now wins.",
             name,
         )
-    _apply_write(name)
+    await _apply_write(db, name)
     await db.refresh(row)
     return StoredGuardrailSchema.from_model(row, shadows_config=shadows_config)
 
@@ -394,7 +406,7 @@ async def update_guardrail(
         ) from None
 
     await _commit(db)
-    _apply_write(name)
+    await _apply_write(db, name)
     await db.refresh(row)
     return StoredGuardrailSchema.from_model(row, shadows_config=name in config_file_guardrails(config))
 
@@ -412,7 +424,7 @@ async def delete_stored_guardrail(
             detail = f"Guardrail '{name}' is defined in the config file and cannot be deleted through the API."
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     await _commit(db)
-    _apply_write(name)
+    await _apply_write(db, name)
 
 
 @router.post("/{name}/test")
