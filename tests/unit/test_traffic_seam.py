@@ -7,6 +7,8 @@ observer annotating the usage row of a real request) is in
 
 import asyncio
 import datetime
+import math
+import time
 from typing import Any
 
 import pytest
@@ -22,6 +24,7 @@ from gateway.plugins.traffic import (
     ToolCall,
     ToolCallDecision,
     ToolCallEvent,
+    ToolSpec,
     TrafficHooks,
     TrafficObservers,
     conversation_from_chat,
@@ -65,6 +68,9 @@ def test_chat_conversation_pairs_tool_calls_with_tool_results() -> None:
     assert first.results[0].content == "2 passed"
     assert conversation.turns[1].text == "All green."
     assert conversation.session_key.startswith("anon-")
+    # The user's instruction is on the turn it prompted; a tool result is not user text.
+    assert first.user_text == "run the tests"
+    assert conversation.turns[1].user_text == ""
 
 
 def test_messages_conversation_reads_tool_use_and_tool_result_blocks() -> None:
@@ -123,11 +129,29 @@ def test_responses_conversation_accepts_a_plain_string_input() -> None:
     assert conversation.latest_user_text == "hello"
 
 
+def test_declared_tools_are_normalized_from_each_request_shape() -> None:
+    chat_tools = [{"type": "function", "function": {"name": "Bash", "description": "run", "parameters": {"a": 1}}}]
+    messages_tools = [{"name": "Bash", "description": "run", "input_schema": {"a": 1}}]
+    responses_tools = [{"type": "function", "name": "Bash", "description": "run", "parameters": {"a": 1}}]
+    expected = (ToolSpec(name="Bash", description="run", parameters={"a": 1}),)
+
+    assert conversation_from_chat("m", [], session="", tools=chat_tools).tools == expected
+    assert conversation_from_messages("m", None, [], session="", tools=messages_tools).tools == expected
+    assert conversation_from_responses("m", None, [], session="", tools=responses_tools).tools == expected
+    # A provider's built-in tool has no name of its own and is left out.
+    assert conversation_from_chat("m", [], session="", tools=[{"type": "web_search"}]).tools == ()
+
+
 def test_session_key_prefers_an_explicit_identifier_and_is_stable_otherwise() -> None:
     assert session_key(None, "label-1", system="s", first_user_text="u") == "label-1"
     anonymous = session_key(None, None, system="s", first_user_text="u")
     assert anonymous == session_key(system="s", first_user_text="u")
     assert anonymous != session_key(system="s", first_user_text="other")
+    # Two callers whose sessions began identically are two sessions.
+    assert session_key(system="s", first_user_text="u", scope="key-a") != anonymous
+    assert session_key(system="s", first_user_text="u", scope="key-a") != session_key(
+        system="s", first_user_text="u", scope="key-b"
+    )
 
 
 def test_unparseable_arguments_are_kept_raw() -> None:
@@ -284,6 +308,49 @@ async def test_a_slow_async_observer_is_cut_off_at_the_budget() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_slow_sync_observer_is_abandoned_at_the_budget() -> None:
+    import threading
+
+    class Slow:
+        def on_request(self, event: RequestEvent) -> RequestDecision:
+            # Blocks its thread, never the loop: the request moves on at the budget.
+            time.sleep(0.2)
+            return RequestDecision(annotations={"late": True})
+
+    class OnLoop:
+        def on_request(self, event: RequestEvent) -> RequestDecision:
+            return RequestDecision(annotations={"thread": threading.current_thread() is threading.main_thread()})
+
+    observers = TrafficObservers([("slow", Slow()), ("worker", OnLoop())], timeout_ms=20)
+    hooks = TrafficHooks(observers, CALLER, conversation())
+
+    started = time.perf_counter()
+    await hooks.request()
+
+    assert time.perf_counter() - started < 0.15
+    assert hooks.annotations == {"worker": {"thread": False}}
+
+
+@pytest.mark.asyncio
+async def test_annotations_are_capped_per_plugin_and_the_gateway_s_keys_are_reserved() -> None:
+    class Verbose:
+        def on_request(self, event: RequestEvent) -> RequestDecision:
+            return RequestDecision(annotations={"small": "kept"})
+
+        def on_tool_call(self, event: ToolCallEvent) -> ToolCallDecision:
+            return ToolCallDecision(deny="no", annotations={"dump": "x" * (17 * 1024), "would_deny": "mine"})
+
+    hooks = TrafficHooks(TrafficObservers([("v", Verbose())]), CALLER, conversation())
+
+    await hooks.request()
+    await hooks.tool_call(ToolCall("c1", "Bash", {}))
+
+    # The oversized batch is dropped whole; what was recorded before it stays,
+    # and the gateway's own would_deny entry is still written.
+    assert hooks.annotations == {"v": {"small": "kept", "would_deny": [{"tool_call_id": "c1", "message": "no"}]}}
+
+
+@pytest.mark.asyncio
 async def test_annotations_that_cannot_reach_the_json_column_are_skipped() -> None:
     class WrongShape:
         def on_request(self, event: RequestEvent) -> RequestDecision:
@@ -293,7 +360,14 @@ async def test_annotations_that_cannot_reach_the_json_column_are_skipped() -> No
         def on_request(self, event: RequestEvent) -> RequestDecision:
             return RequestDecision(annotations={"seen_at": datetime.datetime.now(tz=datetime.UTC)})
 
-    observers = TrafficObservers([("shape", WrongShape()), ("value", WrongValue()), ("gates", _Recorder())])
+    class NotJson:
+        # json.dumps accepts NaN; PostgreSQL's json parser does not.
+        def on_request(self, event: RequestEvent) -> RequestDecision:
+            return RequestDecision(annotations={"score": math.nan})
+
+    observers = TrafficObservers(
+        [("shape", WrongShape()), ("value", WrongValue()), ("nan", NotJson()), ("gates", _Recorder())]
+    )
     hooks = TrafficHooks(observers, CALLER, conversation())
 
     await hooks.request()

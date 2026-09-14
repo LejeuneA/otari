@@ -29,10 +29,12 @@ from any_llm.types.completion import (
     ChatCompletion,
     ChatCompletionChunk,
     ChatCompletionMessage,
+    ChatCompletionMessageFunctionToolCall,
     Choice,
     ChoiceDelta,
     ChunkChoice,
     CompletionUsage,
+    Function,
 )
 from fastapi import BackgroundTasks, HTTPException, Response
 from sqlalchemy.exc import SQLAlchemyError
@@ -55,6 +57,7 @@ from gateway.api.routes._pipeline import (
 from gateway.api.routes._platform import ResolvedAttempt, ResolvedRoute, SettledCost
 from gateway.core.config import GatewayConfig
 from gateway.models.mcp import McpServerConfig
+from gateway.plugins.traffic import Caller, Conversation, ToolCallDecision, TrafficHooks, TrafficObservers
 from gateway.rate_limit import RateLimitInfo
 from gateway.services.budget_service import ReservationHandle
 from gateway.services.tenancy.errors import WorkspaceMcpServerNotFoundError
@@ -868,6 +871,116 @@ async def test_platform_non_stream_awaits_and_attaches_settlement(
     assert getattr(result.usage, "pricing_source", None) == "managed"
 
 
+def _traffic_hooks() -> tuple[TrafficHooks, list[str]]:
+    seen: list[str] = []
+
+    class Watcher:
+        def on_tool_call(self, event: Any) -> ToolCallDecision:
+            seen.append(event.tool_call.name)
+            return ToolCallDecision(annotations={"seen": [event.tool_call.name]})
+
+    caller = Caller(api_key_id=None, user_id=None, workspace_id=None, organization_id=None)
+    conversation = Conversation(api="chat", model="gpt-4", system="", turns=(), session_key="s")
+    return TrafficHooks(TrafficObservers([("watcher", Watcher())]), caller, conversation), seen
+
+
+@pytest.mark.asyncio
+async def test_platform_non_stream_asks_the_traffic_observers_per_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_acompletion(**kwargs: Any) -> ChatCompletion:
+        return ChatCompletion(
+            id="cmpl-1",
+            choices=[
+                Choice(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=ChatCompletionMessage(
+                        role="assistant",
+                        content=None,
+                        tool_calls=[
+                            ChatCompletionMessageFunctionToolCall(
+                                id="c1", type="function", function=Function(name="Bash", arguments="{}")
+                            )
+                        ],
+                    ),
+                )
+            ],
+            created=0,
+            model="gpt-4",
+            object="chat.completion",
+            usage=_usage(),
+        )
+
+    async def fake_report(**kwargs: Any) -> SettledCost:
+        return SettledCost(cost_usd="0.01", pricing_source="managed")
+
+    monkeypatch.setattr(chat, "acompletion", fake_acompletion)
+    monkeypatch.setattr(pipeline, "_report_platform_usage", fake_report)
+    hooks, seen = _traffic_hooks()
+    attempt = ResolvedAttempt(
+        attempt_id="3f1b6a1e-0000-4000-8000-000000000003",
+        position=0,
+        provider="openai",
+        model="gpt-4",
+        api_key="sk-test",
+        managed=True,
+    )
+
+    await run_platform_non_stream(
+        adapter=chat._ADAPTER,
+        route=ResolvedRoute(request_id="req-1", fallback_enabled=False, attempts=[attempt]),
+        base_request_fields={"messages": [{"role": "user", "content": "hi"}]},
+        tool_ctx=_tool_ctx(),
+        response=Response(),
+        background_tasks=BackgroundTasks(),
+        config=GatewayConfig(platform={"usage_inline_timeout_ms": 1000}),
+        rate_limit_info=None,
+        traffic=hooks,
+    )
+
+    # Hybrid mode asks about the response's tool calls the way standalone does.
+    assert seen == ["Bash"]
+    assert hooks.annotations == {"watcher": {"seen": ["Bash"]}}
+
+
+@pytest.mark.asyncio
+async def test_platform_streaming_hands_the_traffic_hooks_to_the_response_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = ResolvedRoute(
+        request_id="request-1",
+        fallback_enabled=False,
+        attempts=[
+            ResolvedAttempt(
+                attempt_id="attempt-1", position=1, provider="openai", model="gpt-4", api_key="k", managed=True
+            )
+        ],
+    )
+
+    async def fake_iterate_streaming_attempts(**kwargs: Any) -> tuple[Any, AsyncIterator[Any]]:
+        async def stream() -> AsyncIterator[Any]:
+            yield object()
+
+        return route.attempts[0], stream()
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(pipeline, "iterate_streaming_attempts", fake_iterate_streaming_attempts)
+    monkeypatch.setattr(pipeline, "build_streaming_response", lambda **kwargs: captured.update(kwargs) or Response())
+    hooks, _seen = _traffic_hooks()
+
+    await pipeline.run_streaming_with_fallback(
+        adapter=chat._ADAPTER,
+        route=route,
+        base_request_fields={},
+        config=GatewayConfig(),
+        background_tasks=BackgroundTasks(),
+        rate_limit_info=None,
+        tool_ctx=_tool_ctx(),
+        traffic=hooks,
+    )
+
+    assert captured["traffic"] is hooks
+
+
 # ---------------------------------------------------------------------------
 # Terminal cost buffering: only the last carrier is held
 # ---------------------------------------------------------------------------
@@ -1220,9 +1333,7 @@ async def test_a_request_without_a_workspace_is_refused_before_any_tool_resolves
 
     ctx = _ctx(GatewayConfig(), db=cast(Any, object()), reservation=_reservation())
     with pytest.raises(HTTPException) as exc_info:
-        await _call_prepare_gateway_tools(
-            ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")]
-        )
+        await _call_prepare_gateway_tools(ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")])
 
     assert exc_info.value.status_code == 500
     assert settlement.refunded == 1
@@ -1241,9 +1352,7 @@ async def test_unknown_mcp_server_id_releases_reservation(monkeypatch: pytest.Mo
 
     ctx = _ctx(GatewayConfig(), db=cast(Any, object()), reservation=_reservation(), workspace_id=uuid.uuid4())
     with pytest.raises(HTTPException) as exc_info:
-        await _call_prepare_gateway_tools(
-            ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")]
-        )
+        await _call_prepare_gateway_tools(ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")])
 
     assert exc_info.value.status_code == 404
     assert settlement.refunded == 1
@@ -1415,9 +1524,7 @@ async def test_a_database_failure_releases_the_reservation(monkeypatch: pytest.M
     db = AsyncMock()
     ctx = _ctx(GatewayConfig(), db=cast(Any, db), reservation=_reservation(), workspace_id=uuid.uuid4())
     with pytest.raises(SQLAlchemyError):
-        await _call_prepare_gateway_tools(
-            ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")]
-        )
+        await _call_prepare_gateway_tools(ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")])
 
     assert settlement.refunded == 1
     assert db.rollback.await_count == 1, "the session is rolled back first, or the release cannot run"
@@ -1442,9 +1549,7 @@ async def test_a_release_that_also_fails_reraises_the_original(monkeypatch: pyte
     db.rollback.side_effect = SQLAlchemyError("still down")
     ctx = _ctx(GatewayConfig(), db=cast(Any, db), reservation=_reservation(), workspace_id=uuid.uuid4())
     with pytest.raises(SQLAlchemyError, match="connection reset"):
-        await _call_prepare_gateway_tools(
-            ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")]
-        )
+        await _call_prepare_gateway_tools(ctx, mcp_server_ids=[cast(Any, "11111111-1111-1111-1111-111111111111")])
 
 
 @pytest.mark.asyncio
@@ -1600,9 +1705,7 @@ async def test_standalone_non_stream_success_logs_once_and_reconciles(monkeypatc
     settlement = _Settlement()
     settlement.install(monkeypatch)
 
-    result, _ = await _run_standalone(
-        monkeypatch, result=_completion(usage=_usage()), reservation=_reservation()
-    )
+    result, _ = await _run_standalone(monkeypatch, result=_completion(usage=_usage()), reservation=_reservation())
 
     assert result.usage is not None
     assert len(settlement.logged) == 1

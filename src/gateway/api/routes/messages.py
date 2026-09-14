@@ -727,6 +727,8 @@ async def create_message(
             or (str(user_from_metadata) if user_from_metadata else None)
             or raw_request.headers.get(CONVERSATION_HEADER)
             or "",
+            scope=ctx.api_key_id,
+            tools=request.tools,
         ),
         guardrail_text=latest_user_text(request.messages),
         tools=request.tools,
@@ -780,6 +782,7 @@ async def create_message(
                     rate_limit_info=ctx.rate_limit_info,
                     tool_ctx=tool_ctx,
                     session_label=request.session_label,
+                    traffic=ctx.traffic,
                 )
             except HTTPException as exc:
                 # Hybrid terminal failures arrive as format-agnostic plain-string
@@ -826,6 +829,7 @@ async def create_message(
                 config=config,
                 rate_limit_info=ctx.rate_limit_info,
                 session_label=request.session_label,
+                traffic=ctx.traffic,
             )
         except HTTPException as exc:
             # Hybrid terminal failures arrive as format-agnostic plain-string

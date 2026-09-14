@@ -3398,6 +3398,7 @@ async def _log_failure_and_refund(
         attribution=attribution,
         tool_tally=tool_tally,
         workspace_id=ctx.workspace_id,
+        plugin_annotations=ctx.traffic.annotations_or_none() if ctx.traffic else None,
     )
     if ctx.reservation is not None:
         if cost:
@@ -3854,6 +3855,7 @@ def build_streaming_response(
                 counts_toward_budget=_handle_counts_toward_budget(reservation),
                 tool_tally=tool_tally,
                 workspace_id=workspace_id,
+                plugin_annotations=traffic.annotations_or_none() if traffic is not None else None,
             )
             if abandoned_cost:
                 await reconcile_reservation(db, reservation, abandoned_cost)
@@ -4158,6 +4160,7 @@ async def run_streaming_with_fallback(
     rate_limit_info: RateLimitInfo | None,
     tool_ctx: ToolContext,
     session_label: str | None = None,
+    traffic: TrafficHooks | None = None,
 ) -> StreamingResponse:
     """Multi-attempt streaming for hybrid-mode requests.
 
@@ -4306,6 +4309,7 @@ async def run_streaming_with_fallback(
     return build_streaming_response(
         adapter=adapter,
         stream=stream_to_return,
+        traffic=traffic,
         provider=LLMProvider(chosen.provider),
         model=chosen.model,
         config=config,
@@ -4381,6 +4385,7 @@ async def run_platform_non_stream(
     config: GatewayConfig,
     rate_limit_info: RateLimitInfo | None,
     session_label: str | None = None,
+    traffic: TrafficHooks | None = None,
 ) -> ResultT:
     """Drive the multi-attempt hybrid-mode non-streaming path via the shared
     ``run_platform_attempts`` runner, dispatching each attempt through the
@@ -4485,6 +4490,8 @@ async def run_platform_non_stream(
         await _flush_pending_usage_reports(config, pending_error_reports, route.request_id, session_label)
         raise
 
+    if traffic is not None:
+        await traffic.result(_api_of(adapter), result)
     if successful_report is None:
         return result
     attempt, usage = successful_report
@@ -4585,6 +4592,7 @@ async def log_exhausted_plan(
         attribution=_failure_attribution(ctx, last),
         tool_tally=tool_tally,
         workspace_id=ctx.workspace_id,
+        plugin_annotations=ctx.traffic.annotations_or_none() if ctx.traffic else None,
     )
     ctx.tool_charge = cost or Decimal(0)
 

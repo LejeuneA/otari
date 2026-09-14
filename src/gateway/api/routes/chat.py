@@ -504,6 +504,8 @@ async def run_chat_completion(
             request.model,
             request.messages,
             session=request.session_label or raw_request.headers.get(CONVERSATION_HEADER) or "",
+            scope=ctx.api_key_id,
+            tools=request.tools,
         ),
     )
 
@@ -552,6 +554,7 @@ async def run_chat_completion(
                     rate_limit_info=ctx.rate_limit_info,
                     tool_ctx=tool_ctx,
                     session_label=request.session_label,
+                    traffic=ctx.traffic,
                 )
             except HTTPException:
                 raise
@@ -600,6 +603,7 @@ async def run_chat_completion(
             config=config,
             rate_limit_info=ctx.rate_limit_info,
             session_label=request.session_label,
+            traffic=ctx.traffic,
         )
 
     resolved = await resolve_dispatch_provider(

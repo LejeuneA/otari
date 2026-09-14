@@ -240,16 +240,19 @@ def register(ctx):
     ctx.add_traffic_observer(Watcher())
 ```
 
-The shapes are provider-neutral: a `Conversation` is a system prompt and a
-list of assistant `Turn`s, each with the `ToolCall`s the model made and the
-`ToolResult`s the client returned, whichever of the chat, messages, or
-responses APIs carried them. `session_key` is the request's `session_label`,
-Claude Code's metadata user id, or the `Otari-Conversation-Id` header, and a
-digest of the system prompt and first user turn when none is present.
+The shapes are provider-neutral: a `Conversation` is a system prompt, the
+`tools` the request declared (`ToolSpec`: name, description, parameters), and
+a list of assistant `Turn`s, each with the `user_text` that prompted it, the
+`ToolCall`s the model made, and the `ToolResult`s the client returned,
+whichever of the chat, messages, or responses APIs carried them.
+`session_key` is the request's `session_label`, Claude Code's metadata user
+id, or the `Otari-Conversation-Id` header, and a digest of the API key, the
+system prompt, and the first user turn when none is present.
 
 `on_request` runs before dispatch, after the input guardrails. `on_tool_call`
 runs for each tool call in the model's response, once the call is whole: a
-stream keeps flowing while a call's fragments are collected. Only calls the
+stream keeps flowing while a call's fragments are collected, then waits while
+the observers answer before the completing chunk is sent on. Only calls the
 client will run are offered; a tool the gateway runs itself (`otari_*` tools,
 MCP servers) is settled inside the tool loop and never reaches the response.
 Either method may be sync or async, and either may be omitted.
@@ -257,16 +260,24 @@ Either method may be sync or async, and either may be omitted.
 What comes back is recorded, not applied. `annotations` from every observer are
 merged under the plugin's name into the usage row's `plugin_annotations`
 column and read back through the usage API; a `deny` is written there as
-`would_deny`. Annotations must be JSON; a plugin whose annotations are not is
-logged and left off the row. Hybrid mode writes no local usage row, so nothing
-is recorded there. Enforcement, replacing a tool call or injecting a system
-message, is a later phase and will keep this contract.
+`would_deny`, a key a plugin cannot set itself. Annotations must be JSON and
+stay under 16 KiB per plugin per request; a batch that is not JSON, or that
+would take the plugin's annotations over the cap, is logged and left off the
+row while what was recorded before it stays. A request that fails, or a
+stream the client abandons after tool work, carries them on its error row
+too. Hybrid mode asks both hooks the same way but writes no local usage row,
+so nothing is recorded there.
+Enforcement, replacing a tool call or injecting a system message, is a later
+phase and will keep this contract.
 
-Observers are fenced. One that raises is logged and skipped, an async one that
-runs past `plugins.observer_timeout_ms` (default 250) is cut off and skipped,
-and nothing runs at all when no plugin registered one. A sync observer cannot
-be interrupted: it is logged when it overruns, so keep sync work short. An
-async plugin can slow a request by that budget per call, and no more.
+Observers are fenced. One that raises is logged and skipped, one that runs
+past `plugins.observer_timeout_ms` (default 250) is abandoned and skipped, and
+nothing runs at all when no plugin registered one. An async observer runs on
+the event loop and is cancelled at the budget. A sync one runs in a worker
+thread: the request stops waiting at the budget, the thread finishes on its
+own, and the answer is discarded, so a sync observer that touches shared state
+must be thread-safe. Either way a plugin can slow a request by that budget per
+call, and no more.
 
 ## Getting listed
 

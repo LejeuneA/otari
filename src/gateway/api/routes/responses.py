@@ -586,6 +586,8 @@ async def create_response(
             getattr(request_body, "instructions", None),
             request_body.input,
             session=request_body.session_label or raw_request.headers.get(CONVERSATION_HEADER) or "",
+            scope=ctx.api_key_id,
+            tools=request_body.tools,
         ),
         max_tool_iterations=request_body.max_tool_iterations,
         tools_header=request_body.tools_header,
@@ -650,6 +652,7 @@ async def create_response(
                     rate_limit_info=ctx.rate_limit_info,
                     tool_ctx=tool_ctx,
                     session_label=request_body.session_label,
+                    traffic=ctx.traffic,
                 )
             except HTTPException:
                 raise
@@ -686,6 +689,7 @@ async def create_response(
             config=config,
             rate_limit_info=ctx.rate_limit_info,
             session_label=request_body.session_label,
+            traffic=ctx.traffic,
         )
         return result.model_dump(exclude_none=True)
 

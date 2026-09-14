@@ -277,3 +277,30 @@ async def test_a_request_without_observers_writes_no_annotations(client: TestCli
 
     assert response.status_code == 200, response.text
     assert _latest_usage(client)["plugin_annotations"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_request_keeps_its_request_annotations(watched_client: TestClient) -> None:
+    _create_user(watched_client)
+
+    async def failing_acompletion(**kwargs: Any) -> ChatCompletion:
+        raise RuntimeError("upstream exploded")
+
+    with patch("gateway.api.routes.chat.acompletion", new=failing_acompletion):
+        response = watched_client.post(
+            f"{API_ROOT}/chat/completions",
+            json={
+                "model": "anthropic:claude-opus-4",
+                "messages": CONVERSATION,
+                "user": "test-user",
+                "session_label": "s-43",
+            },
+            headers=HEADERS,
+        )
+
+    assert response.status_code >= 500, response.text
+    row = _latest_usage(watched_client)
+    assert row["status"] == "error"
+    assert row["plugin_annotations"] == {
+        "watcher": {"api": "chat", "session": "s-43", "prior_tool_calls": 1, "workspace": True}
+    }
