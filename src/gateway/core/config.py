@@ -249,6 +249,21 @@ def _create_stage_specs(guardrail_name: str) -> tuple[Any, ...]:
     return tuple(spec for spec in get_parameter_schema(name) if spec.stage.value == "create")
 
 
+@cache
+def _unstorable_secrets(guardrail_name: str) -> frozenset[str]:
+    """Secret parameters that hold a live object rather than a value.
+
+    Upstream types these ``json``: an already-built ``boto3.Session`` or
+    ``ibm_watsonx_ai.APIClient``, each holding an open connection and tokens that
+    refresh themselves. They exist for a caller driving any-guardrail from their
+    own Python, which this gateway is not. Derived from the registry rather than
+    listed, so one added upstream is refused without an edit here.
+    """
+    return frozenset(
+        spec.name for spec in _create_stage_specs(guardrail_name) if spec.secret and spec.type.value == "json"
+    )
+
+
 def validate_guardrail_create_kwargs(guardrail_name: str, kwargs: Mapping[str, Any], where: str) -> None:
     """Hold a guardrail's constructor arguments to the signature it actually has.
 
@@ -278,6 +293,13 @@ def validate_guardrail_create_kwargs(guardrail_name: str, kwargs: Mapping[str, A
             msg = (
                 f"{where}.create_kwargs.{key} is not an argument of guardrail "
                 f"'{guardrail_name}' (it takes: {known})."
+            )
+            raise ValueError(msg)
+        if key in _unstorable_secrets(guardrail_name):
+            msg = (
+                f"{where}.create_kwargs.{key} cannot be stored: guardrail '{guardrail_name}' wants a live "
+                "object there (an authenticated client or session), which nothing can be written down as. "
+                "Supply the credential arguments beside it instead."
             )
             raise ValueError(msg)
     for name, spec in specs.items():
