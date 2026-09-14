@@ -219,6 +219,43 @@ each requires an `api_key` or `api_base`. Provider options and request filters
 are covered in [Built-in tools](tools.md). A tool carrying an `api_key` must use
 an HTTPS `api_base`; a keyless local SearXNG endpoint may use HTTP.
 
+## Guardrails
+
+`guardrails` defines the guardrails this gateway builds and runs itself. Each key
+is the name a request sends as a guardrail entry's `profile`.
+
+```yaml
+guardrails:
+  prompt-injection:
+    guardrail_name: lakera_guard
+    create_kwargs:
+      api_key: "${LAKERA_API_KEY}"
+    validate_kwargs: {}
+    enabled: true
+```
+
+`guardrail_name` is the any-guardrail class;
+`GET /api/v1/tool-settings/guardrails/catalog` lists every one this build ships,
+with the arguments each accepts. `create_kwargs` are constructor arguments,
+`validate_kwargs` are sent on every check, and `enabled` defaults to true.
+
+The same guardrails can be managed at runtime from `/api/v1/guardrail-credentials`,
+which is what the dashboard writes. That API is standalone-only: hosted and hybrid
+deployments do not serve it, and a hybrid gateway has no database to store a
+guardrail in, so this block is its only way to define one. A stored guardrail wins over a config-file one
+of the same name, so the file is a baseline rather than an override. Config
+entries stay read-only through the API.
+
+Secrets in a stored guardrail are encrypted with `OTARI_SECRET_KEY` and never
+returned; a read shows which ones are set, masked. Secrets in this file are not,
+so use `${VAR}` interpolation rather than writing a key into a file you commit.
+
+Entries are validated at load: an unknown class, an argument no guardrail takes,
+or a missing required one refuses startup rather than failing the first request.
+
+This block is the only way to define an in-process guardrail in hybrid mode,
+which keeps no local database. See [Guardrails](guardrails.md).
+
 ## Mail
 
 Mail is optional. Invitations still return an accept link when no transport is

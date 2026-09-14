@@ -101,3 +101,13 @@ providers:
 #   local:
 #     provider: searxng
 #     api_base: "http://searxng:8080"
+
+# Guardrails this gateway builds and runs itself. The key is the name a request
+# sends as a guardrail entry's "profile". A guardrail stored through the
+# dashboard wins over an entry here of the same name. Keep secrets in the
+# environment: values here are read as written. See docs/guardrails.md.
+# guardrails:
+#   prompt-injection:
+#     guardrail_name: lakera_guard
+#     create_kwargs:
+#       api_key: "${LAKERA_API_KEY}"
