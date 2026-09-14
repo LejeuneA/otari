@@ -75,6 +75,12 @@ tries retryable fallbacks before a response begins, and reports each outcome.
 Workspace MCP and web-search configuration are resolved through the same control
 plane.
 
+[Guardrails](guardrails.md) are the exception to that pattern: a hybrid gateway
+runs the ones its own `guardrails:` config block defines, in its own process,
+and sends any other profile to the guardrails service. Stored guardrail
+definitions need the local database, so they are standalone only, and the config
+block is the only way a hybrid deployment defines a guardrail it runs itself.
+
 ## Managed models and BYO credentials
 
 Hybrid mode can receive two kinds of provider credential:

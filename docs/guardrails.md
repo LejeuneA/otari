@@ -12,6 +12,11 @@ docker compose --profile guardrails up
 
 This starts the `anyguardrails` container (which wraps [any-guardrail](https://github.com/mozilla-ai/any-guardrail)) and the `encoderfile` container that backs the default prompt-injection profile.
 
+You may not need it. Otari can build and run a guardrail in its own process, so
+a deployment whose every profile is defined in Otari runs none of this. The
+container is what a profile Otari does not define falls back to. See
+[Defining a guardrail Otari runs itself](#defining-a-guardrail-otari-runs-itself).
+
 ## Using a guardrail
 
 Add a `guardrails` field to your request:
@@ -43,10 +48,19 @@ curl http://localhost:8000/api/v1/chat/completions \
 
 ### When the guardrails service is unreachable
 
-A `block` guardrail that cannot be evaluated at all (service down, no URL
-configured, malformed response) **fails closed**: the request is rejected with a
-`502` rather than forwarded unchecked. A `monitor` guardrail fails open, since it
-was never enforcing.
+A `block` guardrail that cannot be evaluated at all **fails closed**: the request
+is rejected with a `502` rather than forwarded unchecked. A `monitor` guardrail
+fails open, since it was never enforcing. "Cannot be evaluated" covers a
+guardrail that runs in Otari's own process as well as one that runs in the
+service: the packages are missing, the vendor refused the call, the check ran
+past its deadline, the service is down, the response was malformed, or nothing
+defines the profile and no URL is configured.
+
+The `502` body names the profile and nothing else. Not the endpoint, not the
+environment variable that would configure one, and not the guardrail class or
+what its vendor said back: none of that is the caller's to see, and none of it
+is theirs to fix. The whole reason goes to the gateway's log instead, where the
+operator who can act on it is reading.
 
 A mandated entry whose endpoint fails its safety check counts as unevaluable
 too, and takes the same two paths. That covers a host that has stopped
@@ -197,6 +211,42 @@ Rotating `OTARI_SECRET_KEY` works the same way it does for providers: set it to
 the provider and search-tool endpoints, then drop the old key and restart again.
 A guardrail whose secrets no longer decrypt is reported with
 `"decryptable": false` rather than looking like one with no secrets at all.
+
+### How a profile resolves
+
+When a request names a profile, Otari picks where to run it in this order:
+
+1. **A stored guardrail of that name.** It runs in Otari's process.
+2. **A `guardrails:` entry of that name**, when no stored row has claimed it.
+   Also in Otari's process.
+3. **The guardrails service**, at the entry's own `url` if it has one, otherwise
+   at `guardrails_url` / `OTARI_GUARDRAILS_URL`.
+
+An entry that carries its own `url` skips the first two steps entirely. That URL
+is a deliberate choice of backend, and it is the only way an entry carries a
+credential, so sending the check somewhere else would quietly drop the
+credential stored for it.
+
+A stored guardrail owns its name whether or not it can run. Setting `enabled` to
+`false` does not hand the name back to a `guardrails:` entry of the same name:
+nothing runs, and the profile is treated as unevaluable, so a `block` entry
+naming it fails closed rather than serving an unchecked request. The same is
+true of a stored guardrail whose secrets no longer decrypt. To let a config-file
+entry take the name back, delete the stored one.
+
+A profile that matches nothing and has no URL to fall back to is unevaluable
+too, and takes the same two paths as any other failure.
+
+Definitions are deployment configuration, not a per-request lookup, so each
+worker reads them from a cache refreshed every 30 seconds. A write through the
+API takes effect at once on the worker that served it, and everywhere else
+within that window.
+
+A `validate_kwargs` you store is a **default, not a floor**: a caller who names
+the profile in their own request can pass different values. To set a value a
+caller cannot change, mandate the profile through an
+[organization entry](#organization-guardrails) or a [routing policy](routing.md),
+which own the settings for the profiles they name.
 
 ### How the layers compose
 

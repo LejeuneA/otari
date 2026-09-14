@@ -239,12 +239,17 @@ guardrails:
 with the arguments each accepts. `create_kwargs` are constructor arguments,
 `validate_kwargs` are sent on every check, and `enabled` defaults to true.
 
+A profile named here is resolved and run before the guardrails service is
+considered at all; see [how a profile resolves](guardrails.md#how-a-profile-resolves).
+
 The same guardrails can be managed at runtime from `/api/v1/guardrail-credentials`,
 which is what the dashboard writes. That API is standalone-only: hosted and hybrid
 deployments do not serve it, and a hybrid gateway has no database to store a
 guardrail in, so this block is its only way to define one. A stored guardrail wins over a config-file one
-of the same name, so the file is a baseline rather than an override. Config
-entries stay read-only through the API.
+of the same name, so the file is a baseline rather than an override. It wins even
+when it is switched off, in which case neither runs: disabling a stored guardrail
+does not hand its name back to this file. Config entries stay read-only through
+the API.
 
 Secrets in a stored guardrail are encrypted with `OTARI_SECRET_KEY` and never
 returned; a read shows which ones are set, masked. Secrets in this file are not,
