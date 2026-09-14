@@ -1,9 +1,9 @@
 """A contributed chain's ``env.py``, honoring the contract ``init_db`` documents.
 
 Otari offers the URL on two channels and this script takes the attribute one,
-which is what a real contributed chain does: ``sqlalchemy.url`` is read back
-through configparser, whose interpolation treats a percent sign as a token, so
-a password containing one breaks it. The version table comes from
+which is what a real contributed chain does: ``sqlalchemy.url`` is stored in a
+configparser and comes back only through interpolation, while the attribute
+holds the URL verbatim. The version table comes from
 ``config.attributes["version_table"]`` and is passed to ``context.configure``,
 so the chain's history never touches Otari's own row.
 """

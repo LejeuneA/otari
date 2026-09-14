@@ -405,9 +405,10 @@ container is built, before anything touches the database.
 Otari hands the contributed `env.py` two things on the Alembic config. The
 database URL travels on two channels, `sqlalchemy.url` and
 `config.attributes["database_url"]`, and a contributed chain should prefer the
-attribute: `sqlalchemy.url` is read back through configparser, whose
-interpolation treats a percent sign as a token, so a password containing one
-breaks it. The declared version table travels as
+attribute: `sqlalchemy.url` is stored in a configparser, so Otari escapes a
+percent sign on the way in and the chain gets the URL back only through
+interpolation, while the attribute holds it verbatim. The declared version
+table travels as
 `config.attributes["version_table"]`.
 
 ```python

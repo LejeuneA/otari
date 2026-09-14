@@ -143,9 +143,10 @@ class MigrationContribution:
     The contract for the contributed ``env.py``: Otari passes the database URL
     both as ``sqlalchemy.url`` and as ``config.attributes["database_url"]``, and
     passes the declared table name as ``config.attributes["version_table"]``.
-    Prefer the attribute for the URL: ``sqlalchemy.url`` is read back through
-    configparser, whose interpolation treats a percent sign as a token, so a
-    password containing one breaks it. The ``version_table`` attribute is
+    Prefer the attribute for the URL: ``sqlalchemy.url`` is stored in a
+    configparser, so Otari escapes a percent sign on the way in and the chain
+    gets the URL back only through interpolation, while the attribute holds it
+    verbatim. The ``version_table`` attribute is
     offered, not required: a chain may read it, or may hardcode a constant of
     its own. What Otari requires is that the ``version_table`` declared on the
     contribution is the table the chain actually stamps, because Otari uses the

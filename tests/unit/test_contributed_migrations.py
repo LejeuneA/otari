@@ -18,7 +18,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from gateway.container import MigrationContribution
 from gateway.core.config import GatewayConfig
-from gateway.core.database import init_db, reset_db
+from gateway.core.database import _alembic_config, init_db, reset_db
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORE_ALEMBIC = _REPO_ROOT / "alembic"
@@ -144,3 +144,20 @@ def test_the_migrate_command_runs_the_contributed_chain_on_a_real_database(
     assert "alembic_version" in tables and PLUGIN.version_table in tables
     assert "plugin_demo" in tables
     assert _version_rows(url, PLUGIN.version_table) == [_head(_PLUGIN_ALEMBIC)]
+
+
+def test_a_url_carrying_a_percent_sign_survives_both_channels() -> None:
+    """A percent-encoded password reaches every chain intact.
+
+    Alembic keeps a main option in a configparser whose interpolation reads a
+    bare percent sign as the start of a token, so an unescaped write raises as
+    it is made. Otari's own ``env.py`` takes the main option and a contributed
+    chain takes the attribute, so both have to come back as they went in.
+    """
+    url = "postgresql+psycopg://otari:p%40ss%25word@db.internal:5432/otari"
+
+    config = _alembic_config(str(_PLUGIN_ALEMBIC), url)
+
+    assert config.get_main_option("sqlalchemy.url") == url
+    assert config.get_section("alembic", {})["sqlalchemy.url"] == url
+    assert config.attributes["database_url"] == url

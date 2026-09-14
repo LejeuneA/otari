@@ -85,15 +85,25 @@ def to_sync_url(database_url: str) -> str:
     return url.set(drivername=sync_drivername).render_as_string(hide_password=False)
 
 
+def escape_ini_value(value: str) -> str:
+    """Escape a value bound for ``Config.set_main_option``.
+
+    Alembic stores a main option in a configparser whose interpolation reads a
+    percent sign as the start of a token, so a URL carrying a percent-encoded
+    password (``p%40ss``) raises ``ValueError`` as it is written. Doubling the
+    sign stores it literally; the read back through interpolation returns the
+    original.
+    """
+    return value.replace("%", "%%")
+
+
 def _alembic_config(script_location: str, database_url: str) -> Config:
     alembic_cfg = Config()
-    alembic_cfg.set_main_option("script_location", script_location)
-    alembic_cfg.set_main_option("sqlalchemy.url", database_url)
-    # The same URL on two channels. Otari's own env.py reads the main option, so
-    # it stays; a contributed chain is expected to prefer the attribute, because
-    # set_main_option stores the value in a configparser whose interpolation
-    # treats a percent sign as a token, so a password containing one breaks on
-    # read-back.
+    alembic_cfg.set_main_option("script_location", escape_ini_value(script_location))
+    alembic_cfg.set_main_option("sqlalchemy.url", escape_ini_value(database_url))
+    # The same URL on two channels. Otari's own env.py reads the main option,
+    # which is why that write is escaped; a contributed chain is expected to
+    # prefer the attribute, which is stored raw and so needs no unescaping.
     alembic_cfg.attributes["database_url"] = database_url
     alembic_cfg.attributes["configure_logger"] = False
     return alembic_cfg
