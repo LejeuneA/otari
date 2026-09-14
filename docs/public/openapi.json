@@ -5330,6 +5330,28 @@
             "title": "Cli Commands",
             "type": "array"
           },
+          "config_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Config Keys",
+            "type": "array"
+          },
+          "contributes": {
+            "description": "What the manifest declares; what loaded is enforced to match.",
+            "items": {
+              "enum": [
+                "routes",
+                "cli",
+                "migrations",
+                "ui",
+                "traffic"
+              ],
+              "type": "string"
+            },
+            "title": "Contributes",
+            "type": "array"
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -5344,6 +5366,17 @@
               }
             ],
             "title": "Error"
+          },
+          "getting_started": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Getting Started"
           },
           "homepage": {
             "anyOf": [
@@ -5432,6 +5465,7 @@
           "description",
           "source",
           "status",
+          "contributes",
           "api_prefix",
           "routes",
           "cli_commands",
@@ -5970,6 +6004,17 @@
           "installed": {
             "title": "Installed",
             "type": "boolean"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginManifestSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The plugin's own declaration, when the listing carried it; GET /plugins/marketplace/describe reads it from the repository otherwise."
           },
           "name": {
             "title": "Name",
@@ -9600,6 +9645,78 @@
           "mcp_servers"
         ],
         "title": "PlaygroundToolsResponse",
+        "type": "object"
+      },
+      "PluginManifestSummary": {
+        "description": "What a plugin declares about itself, readable before it is installed or run.",
+        "properties": {
+          "config_keys": {
+            "description": "Keys the plugin reads from its own block of config.yml.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Config Keys",
+            "type": "array"
+          },
+          "contributes": {
+            "description": "What the plugin adds; enforced when it loads.",
+            "items": {
+              "enum": [
+                "routes",
+                "cli",
+                "migrations",
+                "ui",
+                "traffic"
+              ],
+              "type": "string"
+            },
+            "title": "Contributes",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "getting_started": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A page that walks a new user through setup.",
+            "title": "Getting Started"
+          },
+          "homepage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Homepage"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "description",
+          "contributes",
+          "config_keys"
+        ],
+        "title": "PluginManifestSummary",
         "type": "object"
       },
       "PluginProblem": {
@@ -25934,6 +26051,79 @@
           }
         ],
         "summary": "Marketplace",
+        "tags": [
+          "plugins"
+        ]
+      }
+    },
+    "/api/v1/plugins/marketplace/describe": {
+      "get": {
+        "description": "Read a repository's plugin manifest, so an install can be understood before it happens.",
+        "operationId": "plugins-describe_plugin",
+        "parameters": [
+          {
+            "description": "GitHub repository, as owner/name.",
+            "in": "query",
+            "name": "repo",
+            "required": true,
+            "schema": {
+              "description": "GitHub repository, as owner/name.",
+              "maxLength": 200,
+              "title": "Repo",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Branch, tag, or commit; the default branch when unset.",
+            "in": "query",
+            "name": "ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Branch, tag, or commit; the default branch when unset.",
+              "title": "Ref"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginManifestSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Describe Plugin",
         "tags": [
           "plugins"
         ]

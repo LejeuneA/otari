@@ -2906,6 +2906,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/plugins/marketplace/describe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describe Plugin
+         * @description Read a repository's plugin manifest, so an install can be understood before it happens.
+         */
+        get: operations["plugins-describe_plugin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plugins/upload": {
         parameters: {
             query?: never;
@@ -7378,10 +7398,19 @@ export interface components {
              * @description Top-level `otari` command groups the plugin added.
              */
             cli_commands: string[];
+            /** Config Keys */
+            config_keys?: string[];
+            /**
+             * Contributes
+             * @description What the manifest declares; what loaded is enforced to match.
+             */
+            contributes: ("routes" | "cli" | "migrations" | "ui" | "traffic")[];
             /** Description */
             description: string;
             /** Error */
             error?: string | null;
+            /** Getting Started */
+            getting_started?: string | null;
             /** Homepage */
             homepage?: string | null;
             /** @description Provenance, for a plugin installed from an archive. */
@@ -7720,6 +7749,8 @@ export interface components {
             description: string;
             /** Installed */
             installed: boolean;
+            /** @description The plugin's own declaration, when the listing carried it; GET /plugins/marketplace/describe reads it from the repository otherwise. */
+            manifest?: components["schemas"]["PluginManifestSummary"] | null;
             /** Name */
             name: string;
             /**
@@ -9498,6 +9529,35 @@ export interface components {
             /** Mcp Servers */
             mcp_servers: components["schemas"]["PlaygroundMcpServer"][];
             web_search: components["schemas"]["PlaygroundToolStatus"];
+        };
+        /**
+         * PluginManifestSummary
+         * @description What a plugin declares about itself, readable before it is installed or run.
+         */
+        PluginManifestSummary: {
+            /**
+             * Config Keys
+             * @description Keys the plugin reads from its own block of config.yml.
+             */
+            config_keys: string[];
+            /**
+             * Contributes
+             * @description What the plugin adds; enforced when it loads.
+             */
+            contributes: ("routes" | "cli" | "migrations" | "ui" | "traffic")[];
+            /** Description */
+            description: string;
+            /**
+             * Getting Started
+             * @description A page that walks a new user through setup.
+             */
+            getting_started?: string | null;
+            /** Homepage */
+            homepage?: string | null;
+            /** Name */
+            name: string;
+            /** Version */
+            version: string;
         };
         /** PluginProblem */
         PluginProblem: {
@@ -17174,6 +17234,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketplaceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "plugins-describe_plugin": {
+        parameters: {
+            query: {
+                /** @description GitHub repository, as owner/name. */
+                repo: string;
+                /** @description Branch, tag, or commit; the default branch when unset. */
+                ref?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginManifestSummary"];
                 };
             };
             /** @description Validation Error */
