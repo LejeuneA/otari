@@ -771,3 +771,57 @@ async def test_describe_refuses_a_repository_with_no_manifest() -> None:
 
     with pytest.raises(PluginInstallError, match="holds no otari-plugin.toml"):
         await describe_github_plugin("example/empty", None, transport=fake_github_repo(None))
+
+
+def fake_github_tree(tree: dict[str, object] | str, manifest_text: str = MANIFEST) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, text=tree) if isinstance(tree, str) else httpx.Response(200, json=tree)
+        return httpx.Response(200, text=manifest_text)
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        ("otari-plugin.toml", "holds no otari-plugin.toml where an install would look"),
+        ("vendor/src/probe_plugin/otari-plugin.toml", "holds no otari-plugin.toml where an install would look"),
+        ("src/other_name/otari-plugin.toml", "declares package 'probe_plugin' but sits in 'other_name'"),
+    ],
+)
+async def test_describe_refuses_what_an_install_would_refuse(path: str, reason: str) -> None:
+    from gateway.plugins.describe import describe_github_plugin
+
+    tree = {"tree": [{"path": "README.md", "type": "blob"}, {"path": path, "type": "blob"}]}
+    with pytest.raises(PluginInstallError, match=reason):
+        await describe_github_plugin("example/probe", "v1", transport=fake_github_tree(tree))
+
+
+@pytest.mark.asyncio
+async def test_describe_reports_a_listing_github_cut_short_or_did_not_answer_as_json() -> None:
+    from gateway.plugins.describe import describe_github_plugin
+
+    with pytest.raises(PluginInstallError, match="too large for GitHub to list"):
+        await describe_github_plugin("example/big", None, transport=fake_github_tree({"tree": [], "truncated": True}))
+    with pytest.raises(PluginInstallError, match="is not JSON"):
+        await describe_github_plugin("example/odd", None, transport=fake_github_tree("<html>not json</html>"))
+
+
+@pytest.mark.asyncio
+async def test_describe_refuses_a_redirect_off_github() -> None:
+    from gateway.plugins.describe import describe_github_plugin
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "https://evil.example/tree"})
+
+    with pytest.raises(PluginInstallError, match="off its own hosts"):
+        await describe_github_plugin("example/moved", None, transport=httpx.MockTransport(handler))
+
+
+def test_a_manifest_that_ships_a_page_must_declare_it() -> None:
+    with pytest.raises(PluginManifestError, match="does not declare"):
+        parse_manifest(
+            '[plugin]\nname = "p"\nversion = "1"\npackage = "p"\ncontributes = ["routes"]\n[plugin.ui]\nlabel = "P"'
+        )

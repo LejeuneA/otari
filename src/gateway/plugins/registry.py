@@ -251,8 +251,6 @@ def _actual_contributions(plugin: LoadedPlugin) -> set[str]:
         actual.add("migrations")
     if plugin.observers:
         actual.add("traffic")
-    if plugin.manifest.ui is not None:
-        actual.add("ui")
     return actual
 
 
@@ -365,7 +363,8 @@ def _load_one(discovered: DiscoveredPlugin, settings: dict[str, Any], container:
         plugin.observers.clear()
         return plugin
     for declared in manifest.contributes:
-        if declared not in _actual_contributions(plugin) and declared != "ui":
+        # "ui" is the manifest's own page, checked at parse time; the rest is what register did.
+        if declared not in _actual_contributions(plugin) and (declared != "ui" or manifest.ui is None):
             logger.warning("Plugin %s declares %r but registered nothing of the kind", manifest.name, declared)
     if manifest.ui is not None:
         ui_dir = (discovered.package_dir / manifest.ui.path).resolve()

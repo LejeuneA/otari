@@ -8,7 +8,7 @@ import re
 import tomllib
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MANIFEST_FILENAME = "otari-plugin.toml"
 ENTRY_POINT_GROUP = "otari.plugins"
@@ -32,13 +32,6 @@ PACKAGE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-
 # The kinds of thing a plugin can add. Each maps to one PluginContext method,
 # and the registry checks what a plugin registered against what it declared.
 Contribution = Literal["routes", "cli", "migrations", "ui", "traffic"]
-CONTRIBUTION_LABELS: dict[str, str] = {
-    "routes": "API routes under /api/v1/plugins/<name>",
-    "cli": "otari command groups",
-    "migrations": "database tables of its own",
-    "ui": "a page in the dashboard",
-    "traffic": "watches inference traffic",
-}
 
 
 class PluginManifestError(ValueError):
@@ -115,6 +108,15 @@ class PluginManifest(BaseModel):
             msg = f"plugin entrypoint {value!r} is not an identifier"
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def _ui_is_declared(self) -> "PluginManifest":
+        # Both halves of this check are in the manifest, so it is refused at
+        # parse time (upload, install, describe) rather than one restart later.
+        if self.ui is not None and "ui" not in self.contributes:
+            msg = 'the manifest ships a [plugin.ui] page but does not declare "ui" in contributes'
+            raise ValueError(msg)
+        return self
 
     @property
     def version_table(self) -> str:

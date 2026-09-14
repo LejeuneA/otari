@@ -23,8 +23,8 @@ import { useDescribePlugin } from "@/shared/api/plugins"
  * For a marketplace entry the dialog also says what the plugin declares it
  * adds, from the listing when it carried the manifest and from the repository
  * otherwise. A manifest that cannot be read does not block the install: the
- * gateway refuses a plugin that does more than it declared, so the risk the
- * warning names is the whole of it.
+ * declaration is the plugin's own account of itself, and the warning above
+ * the typed gate is what covers a plugin that cannot be described.
  */
 export function InstallPluginDialog({
   isOpen,
@@ -130,8 +130,7 @@ function ManifestBlock({
         <p className="text-danger">{errorMessage(describe.error)}</p>
         <p>
           The plugin could not be described before install. You can still
-          install it; the gateway refuses a plugin that adds more than its
-          manifest declares.
+          install it; what it adds will only be known once it loads.
         </p>
       </div>
     )

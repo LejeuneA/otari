@@ -144,8 +144,7 @@ dashboard links a new user to once the plugin is loaded.
 
 `GET /api/v1/plugins/marketplace/describe?repo=owner/name` reads a
 repository's manifest without downloading the plugin, which is what the
-install dialog shows; a verified index entry can carry the same declaration
-under `manifest`.
+install dialog shows.
 
 ```python
 # src/otari_agent_gates/__init__.py
@@ -302,7 +301,10 @@ Marketplace's community list on every gateway, marked unverified. The verified
 list is a JSON index mozilla.ai maintains:
 
 ```json
-{"plugins": [{"name": "agent-gates", "repo": "mozilla-ai/otari-agent-gates", "description": "...", "version": "0.1.0", "ref": "v0.1.0"}]}
+{"plugins": [{"name": "agent-gates", "repo": "mozilla-ai/otari-agent-gates", "description": "...", "version": "0.1.0", "ref": "v0.1.0", "manifest": {"name": "agent-gates", "version": "0.1.0", "package": "otari_agent_gates", "contributes": ["routes", "cli", "migrations", "ui", "traffic"]}}]}
 ```
 
-`ref` pins what an install fetches; without it, the default branch.
+`ref` pins what an install fetches; without it, the default branch. `manifest`
+is the plugin's own declaration, the `[plugin]` table of its `otari-plugin.toml`
+as JSON; with it, the install dialog says what the plugin adds without reading
+the repository.
