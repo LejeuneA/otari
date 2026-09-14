@@ -141,6 +141,35 @@ def test_hybrid_mode_disables_dashboard_management_endpoints(monkeypatch: pytest
     reset_db()
 
 
+def test_hybrid_mode_omits_the_guardrail_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hybrid gateway defines its guardrails in config.yml, not in a table.
+
+    It skips ``init_db`` entirely, so the router that writes ``guardrail_credentials``
+    must not be mounted. A plain 404 rather than the hinted one above: no stub
+    covers this prefix, the same as ``/api/v1/search-tools``, because the platform
+    does not own a guardrail a self-hosted gateway runs in its own process.
+    """
+    monkeypatch.setenv("OTARI_AI_TOKEN", "gw_test_token")
+
+    config = GatewayConfig(mode="hybrid", platform={"base_url": "http://localhost:8100/api/v1"})
+    app = create_app(config)
+
+    with TestClient(app) as client:
+        listed = client.get(f"{API_ROOT}/guardrail-credentials")
+        created = client.post(
+            f"{API_ROOT}/guardrail-credentials",
+            json={"name": "x", "guardrail_name": "lakera_guard"},
+        )
+        tested = client.post(f"{API_ROOT}/guardrail-credentials/x/test", json={"input_text": "hi"})
+
+    assert listed.status_code == 404
+    assert created.status_code == 404
+    assert tested.status_code == 404
+
+    reset_config()
+    reset_db()
+
+
 def test_hybrid_mode_omits_model_management_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
     # The models routers are standalone-only (register_routers returns early in
     # hybrid), so the dashboard's model-management reads have no route at all.

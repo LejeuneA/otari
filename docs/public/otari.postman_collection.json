@@ -1790,6 +1790,193 @@
     {
       "item": [
         {
+          "name": "List All Guardrails",
+          "request": {
+            "description": "List every guardrail a 'profile' can name.\n\n``stored`` are the editable rows written through this API; ``config`` are the\nconfig-file entries, which are still honored and are reported so the operator\ncan see the whole set. Secrets are never returned, only their names.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrail-credentials"
+              ],
+              "raw": "{{baseUrl}}/api/v1/guardrail-credentials"
+            }
+          }
+        },
+        {
+          "name": "Create Guardrail",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"create_kwargs\": {\n    \"api_key\": \"lakera-live-...\"\n  },\n  \"guardrail_name\": \"lakera_guard\",\n  \"name\": \"prompt-injection\"\n}"
+            },
+            "description": "Add a guardrail at runtime. Storing a secret requires OTARI_SECRET_KEY.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrail-credentials"
+              ],
+              "raw": "{{baseUrl}}/api/v1/guardrail-credentials"
+            }
+          }
+        },
+        {
+          "name": "Reencrypt Stored Guardrail Secrets",
+          "request": {
+            "description": "Re-encrypt stored guardrail secrets with the primary OTARI_SECRET_KEY.\n\nThe guardrail half of the key rotation procedure; run it alongside the\nprovider and search-tool ones. Rows that cannot be decrypted are left\nuntouched and must be recovered by replacing that guardrail's secrets.",
+            "header": [],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrail-credentials",
+                "reencrypt"
+              ],
+              "raw": "{{baseUrl}}/api/v1/guardrail-credentials/reencrypt"
+            }
+          }
+        },
+        {
+          "name": "Update Guardrail",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"create_kwargs\": {},\n  \"enabled\": false,\n  \"expected_updated_at\": \"string\",\n  \"guardrail_name\": \"string\",\n  \"validate_kwargs\": {}\n}"
+            },
+            "description": "Update a stored guardrail. Omitted fields are left as-is.\n\n``create_kwargs`` replaces the stored arguments rather than merging into\nthem, so a secret is removed by leaving it out and kept by sending it back as\n``***``. The row is locked ``FOR UPDATE`` so the ``expected_updated_at`` check\nand the write it guards are atomic.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "PATCH",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrail-credentials",
+                ":name"
+              ],
+              "raw": "{{baseUrl}}/api/v1/guardrail-credentials/:name",
+              "variable": [
+                {
+                  "description": "path parameter",
+                  "key": "name",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Stored Guardrail",
+          "request": {
+            "description": "Delete a stored guardrail. A config-file guardrail cannot be deleted here.",
+            "header": [],
+            "method": "DELETE",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrail-credentials",
+                ":name"
+              ],
+              "raw": "{{baseUrl}}/api/v1/guardrail-credentials/:name",
+              "variable": [
+                {
+                  "description": "path parameter",
+                  "key": "name",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Test Stored Guardrail",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"input_text\": \"string\"\n}"
+            },
+            "description": "Run a stored guardrail once, so an operator sees it work before relying on it.\n\nA guardrail that cannot run answers ``ok: false`` with the reason rather than\nan error status: \"it did not work, and here is why\" is the result the form\nasked for. The reason is the runner's own message, which names types and\nargument names but never an argument's value, and this route is\noperator-only. A disabled guardrail is still testable, since checking one\nbefore turning it on is the point.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrail-credentials",
+                ":name",
+                "test"
+              ],
+              "raw": "{{baseUrl}}/api/v1/guardrail-credentials/:name/test",
+              "variable": [
+                {
+                  "description": "path parameter",
+                  "key": "name",
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "name": "guardrail-credentials"
+    },
+    {
+      "item": [
+        {
           "name": "Health Check",
           "request": {
             "description": "General health check endpoint.\n\nReturns basic health status. For infrastructure monitoring,\nuse /health/readiness or /health/liveness instead.",

@@ -18,6 +18,7 @@ from gateway.api.routes import (
     chat,
     embeddings,
     files,
+    guardrail_credentials,
     health,
     hosted_mode,
     hybrid_mode,
@@ -242,4 +243,5 @@ def _register_core_routers(api: APIRouter, config: GatewayConfig) -> None:
     api.include_router(tool_settings.operator_router)
     api.include_router(tool_settings.reader_router)
     api.include_router(search_tools.router)
+    api.include_router(guardrail_credentials.router)
     api.include_router(tools.router)
