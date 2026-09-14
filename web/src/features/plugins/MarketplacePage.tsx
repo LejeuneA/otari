@@ -81,7 +81,11 @@ export function MarketplacePage() {
     }
     if (pending.kind === "repo") {
       install.mutate(
-        { repo: pending.entry.repo, ref: pending.entry.ref ?? null },
+        {
+          repo: pending.entry.repo,
+          ref: pending.entry.ref ?? null,
+          force: false,
+        },
         { onSuccess },
       )
       return

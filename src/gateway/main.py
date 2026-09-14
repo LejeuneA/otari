@@ -197,6 +197,11 @@ def _is_plugin_page(path: str) -> bool:
     return len(parts) >= 4 and parts[1] == "plugins" and parts[3] == "ui"
 
 
+def _is_plugin_asset(path: str) -> bool:
+    """A plugin page's ``assets/`` file: Vite hashes the name, so it is immutable like ``/assets/``."""
+    return _is_plugin_page(path) and "/assets/" in path
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all responses.
 
@@ -222,7 +227,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # a switch to standalone, keeping the install prompt away from a
         # deployment that had since started offering it.
         serves_content = response.status_code < 400
-        if serves_content and path.startswith(_CACHEABLE_PREFIXES):
+        if serves_content and (path.startswith(_CACHEABLE_PREFIXES) or _is_plugin_asset(path)):
             response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
         elif serves_content and (path in _CACHEABLE_PATHS or path.startswith(_SHORT_CACHE_PREFIXES)):
             response.headers.setdefault("Cache-Control", "public, max-age=86400")

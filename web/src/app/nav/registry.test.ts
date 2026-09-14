@@ -467,6 +467,22 @@ describe("isPathVisible", () => {
     expect(isPathVisible("/routing", without("routing"))).toBe(false)
   })
 
+  it("gates a plugin's page on the plugins surface and nothing else", () => {
+    // Not a registry entry, so it borrows the Marketplace row's surface. The
+    // row's operator flag does not carry over: which pages a member may see
+    // is the server's answer, and a member page would otherwise be refused.
+    expect(isPathVisible("/plugins/agent-gates", without("plugins"))).toBe(
+      false,
+    )
+    expect(isPathVisible("/plugins/agent-gates", without("routing"))).toBe(true)
+    expect(
+      isPathVisible(
+        "/plugins/agent-gates",
+        (item) => item.operatorOnly === undefined,
+      ),
+    ).toBe(true)
+  })
+
   it("gates a nested destination on its own surface, not its group's", () => {
     // Guardrails is grouped under Routing and served by the tools surface, so
     // the tools surface is the one that decides. Withholding `routing` leaves

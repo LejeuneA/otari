@@ -433,7 +433,15 @@ function AppShellChrome() {
   const isVisible = useNavVisibility()
   const recordNavigation = useRecordNavigation()
   const { pathname } = useLocation()
-  useDocumentTitle(navLabelForPath(pathname) ?? CHROME_TITLES[pathname])
+  // The rows the registry cannot declare, appended to the Extend section
+  // below its Marketplace row. Read here rather than inside the map because
+  // it is a hook, and gated by the hook itself on the same axes as that row.
+  const pluginPages = usePluginPages()
+  useDocumentTitle(
+    navLabelForPath(pathname) ??
+      CHROME_TITLES[pathname] ??
+      pluginPages.find((page) => page.path === pathname)?.label,
+  )
   // A gated-off destination is still reachable by bookmark or shared URL, so the
   // shell answers those with a panel instead of a page whose every request the
   // server would refuse. An unregistered path (the guide, the 404 splat) has no
@@ -553,10 +561,6 @@ function AppShellChrome() {
     showOrganizationRail ? ORG_NAV_SECTIONS : NAV_SECTIONS,
     isVisible,
   )
-  // The rows the registry cannot declare, appended to the Extend section
-  // below its Marketplace row. Read here rather than inside the map because
-  // it is a hook, and gated by the hook itself on the same axes as that row.
-  const pluginPages = usePluginPages()
 
   // Track the mobile breakpoint so the sidebar can render as an off-canvas
   // drawer below it and as the fixed-width rail above it. Closing the drawer when

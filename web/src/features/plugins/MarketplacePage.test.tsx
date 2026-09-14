@@ -263,6 +263,7 @@ describe("MarketplacePage", () => {
     expect(JSON.parse(String(writes(calls)[0].body))).toEqual({
       repo: COMMUNITY.repo,
       ref: null,
+      force: false,
     })
   })
 

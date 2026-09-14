@@ -733,6 +733,16 @@ export function isPathVisible(
   pathname: string,
   isVisible: (item: NavItem) => boolean,
 ): boolean {
+  if (pathname.startsWith("/plugins/")) {
+    // A plugin's page is not a registry entry, but it is served by the same
+    // surface the Marketplace is, so it is gated on that axis alone: who may
+    // see a given page is the server's answer, not the operator flag's.
+    const marketplace = navItemForPath("/marketplace")
+    return (
+      marketplace === undefined ||
+      isVisible({ ...marketplace, operatorOnly: undefined })
+    )
+  }
   const item = navItemForPath(pathname)
   return item === undefined || isVisible(item)
 }

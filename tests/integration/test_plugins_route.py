@@ -211,6 +211,21 @@ def test_an_uploaded_archive_lands_in_the_directory_as_pending(
     assert installing_client.get(f"{API_ROOT}/plugins/second/probe/open").status_code == 404
 
 
+def test_a_plugin_page_asset_is_cached_like_the_dashboard_s_own(plugin_client: TestClient, plugins_dir: Path) -> None:
+    # Vite hashes the file name, so the URL is immutable for as long as it exists.
+    (static_dir,) = [path for path in plugins_dir.glob("probe/**/static") if path.is_dir()]
+    assets = static_dir / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    (assets / "index-abc123.js").write_text("console.log('probe')")
+
+    response = plugin_client.get("/plugins/probe/ui/assets/index-abc123.js")
+
+    assert response.status_code == 200
+    assert "immutable" in response.headers["cache-control"]
+    page = plugin_client.get("/plugins/probe/ui/")
+    assert "immutable" not in page.headers.get("cache-control", "")
+
+
 def test_a_bad_archive_is_refused_with_the_reason(installing_client: TestClient, plugins_dir: Path) -> None:
     response = installing_client.post(
         f"{API_ROOT}/plugins/upload", headers=HEADERS, files={"file": ("junk.zip", b"not an archive")}

@@ -110,7 +110,7 @@ export function PluginPage() {
       <iframe
         title={plugin.ui.label}
         src={plugin.ui.url}
-        sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-downloads"
+        sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
         className="min-h-[24rem] w-full flex-1 border border-border bg-surface"
       />
     </div>

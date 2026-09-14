@@ -6,7 +6,7 @@ import type {
   MarketplaceResponse,
   PluginsResponse,
 } from "@/client"
-import { apiFetch } from "@/shared/api/client"
+import { apiFetch, longRequestSignal } from "@/shared/api/client"
 import { NO_RETRY, PLUGIN_MARKETPLACE, PLUGINS } from "@/shared/api/queryKeys"
 
 // Operator-only, all of it: `GET /plugins` answers 403 to anyone else, so a
@@ -54,6 +54,13 @@ function useInvalidatePlugins() {
   }
 }
 
+// Both installs are bounded by the long deadline rather than the default one.
+// An upload carries up to 64 MB across the operator's own uplink, and an
+// install has the gateway fetch the archive from GitHub before it answers;
+// either can outrun 30s and still succeed, and the server unpacks the archive
+// whether or not the browser is still listening, so an abort would report a
+// failure for an install that landed and invite a second one.
+
 /** Upload an archive. Multipart, with the file under the `file` field. */
 export function useUploadPlugin() {
   const invalidate = useInvalidatePlugins()
@@ -64,6 +71,7 @@ export function useUploadPlugin() {
       return apiFetch<InstallPluginResponse>("/plugins/upload", {
         method: "POST",
         body,
+        signal: longRequestSignal(),
       })
     },
     onSuccess: invalidate,
@@ -78,6 +86,7 @@ export function useInstallPlugin() {
       apiFetch<InstallPluginResponse>("/plugins/install", {
         method: "POST",
         body: JSON.stringify(body),
+        signal: longRequestSignal(),
       }),
     onSuccess: invalidate,
   })

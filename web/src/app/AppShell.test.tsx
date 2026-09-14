@@ -658,6 +658,8 @@ describe("AppShell surface gating", () => {
         "Agent gates",
       ),
     ).toHaveAttribute("aria-current", "page")
+    // And the tab is titled the way every registered destination's is.
+    expect(document.title).toBe("Agent gates · Otari")
   })
 
   it("withholds Marketplace and the plugin rows from a caller who is not an operator", async () => {
