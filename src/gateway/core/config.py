@@ -4,8 +4,9 @@ import os
 import re
 import types
 import typing
-from collections.abc import Container
+from collections.abc import Container, Mapping
 from datetime import datetime
+from functools import cache
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
@@ -219,6 +220,116 @@ def validate_search_tool_entry(name: str, entry: Any) -> None:
     if options is not None and not isinstance(options, dict):
         msg = f"search_tools.{name}.options must be a mapping."
         raise ValueError(msg)
+
+
+# ``any_guardrail`` is imported inside these two rather than at module scope.
+# Reading its registry costs ~90ms, and ``core.config`` is imported by every
+# entry point including the CLI, so a deployment with no ``guardrails:`` block
+# should not pay for a question it never asks. The registry is a stdlib+pydantic
+# leaf, so neither helper loads a model backend when it does run.
+@cache
+def _is_known_guardrail(guardrail_name: str) -> bool:
+    """Whether ``guardrail_name`` names a guardrail this build can construct."""
+    from any_guardrail.base import GuardrailName
+
+    try:
+        GuardrailName(guardrail_name)
+    except ValueError:
+        return False
+    return True
+
+
+@cache
+def _create_stage_specs(guardrail_name: str) -> tuple[Any, ...]:
+    """The constructor parameters ``guardrail_name`` declares, in registry order."""
+    from any_guardrail.base import GuardrailName
+    from any_guardrail.parameter_registry import get_parameter_schema
+
+    name = GuardrailName(guardrail_name)
+    return tuple(spec for spec in get_parameter_schema(name) if spec.stage.value == "create")
+
+
+def validate_guardrail_create_kwargs(guardrail_name: str, kwargs: Mapping[str, Any], where: str) -> None:
+    """Hold a guardrail's constructor arguments to the signature it actually has.
+
+    Module-level, and reused by the runtime CRUD path
+    (``/api/v1/guardrail-credentials``) rather than restated there, exactly as
+    :func:`validate_search_tool_entry` is. ``where`` names the thing being
+    validated (``guardrails.<name>`` for a config entry) so one message serves
+    both callers.
+
+    Read from ``any_guardrail``'s parameter registry, a stdlib+pydantic leaf
+    that describes a guardrail without importing its model backend, so this
+    costs no torch import.
+
+    Two rules, and the distinction between them matters. An argument no
+    guardrail takes is refused, because none of the 40 accepts ``**kwargs``, so
+    it would be a ``TypeError`` at build time with nothing naming the typo. A
+    *signature*-required argument is refused when missing, but an
+    "effectively required" one is not: upstream marks the second kind for a
+    parameter it reads from an environment variable when absent, and Lakera's
+    ``api_key`` is one, so demanding it would refuse a deployment that supplies
+    the key the documented way.
+    """
+    specs = {spec.name: spec for spec in _create_stage_specs(guardrail_name)}
+    for key in kwargs:
+        if key not in specs:
+            known = ", ".join(sorted(specs)) or "none"
+            msg = (
+                f"{where}.create_kwargs.{key} is not an argument of guardrail "
+                f"'{guardrail_name}' (it takes: {known})."
+            )
+            raise ValueError(msg)
+    for name, spec in specs.items():
+        if spec.required and name not in kwargs:
+            msg = f"{where}.create_kwargs.{name} is required by guardrail '{guardrail_name}'."
+            raise ValueError(msg)
+
+
+def validate_guardrail_entry(name: str, entry: Any) -> None:
+    """Validate one ``guardrails`` entry, raising ``ValueError`` on any problem.
+
+    A guardrail that will not build is one a request discovers by failing closed,
+    which is why this runs at load rather than at first use. The name doubles as
+    a ``/api/v1/guardrail-credentials/{name}`` path segment once a stored row
+    shares the namespace, so it may not contain a slash.
+
+    ``enabled`` is left absent rather than defaulted here, so one layer decides
+    what absent means.
+    """
+    if not name:
+        msg = "guardrail name must not be empty."
+        raise ValueError(msg)
+    if "/" in name:
+        msg = f"guardrail name '{name}' must not contain '/' (it is used as a URL path segment)."
+        raise ValueError(msg)
+    if not isinstance(entry, dict):
+        msg = f"guardrails.{name} must be a mapping."
+        raise ValueError(msg)
+
+    guardrail_name = entry.get("guardrail_name")
+    if not guardrail_name:
+        msg = f"guardrails.{name}.guardrail_name is required (the any-guardrail class to build)."
+        raise ValueError(msg)
+    if not isinstance(guardrail_name, str) or not _is_known_guardrail(guardrail_name):
+        msg = (
+            f"guardrails.{name}.guardrail_name '{guardrail_name}' is not a guardrail this gateway ships. "
+            "GET /api/v1/tool-settings/guardrails/catalog lists them."
+        )
+        raise ValueError(msg)
+
+    for field in ("create_kwargs", "validate_kwargs"):
+        value = entry.get(field)
+        if value is not None and not isinstance(value, dict):
+            msg = f"guardrails.{name}.{field} must be a mapping."
+            raise ValueError(msg)
+
+    enabled = entry.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        msg = f"guardrails.{name}.enabled must be true or false."
+        raise ValueError(msg)
+
+    validate_guardrail_create_kwargs(guardrail_name, entry.get("create_kwargs") or {}, f"guardrails.{name}")
 
 
 class _NonScalarField(Exception):
@@ -777,6 +888,19 @@ class GatewayConfig(BaseSettings):
             "(required for exa), an 'api_base' (required for searxng unless web_search_url is "
             "set, which it then inherits), a 'timeout' in seconds, and an 'options' mapping of "
             "provider-native defaults. Standalone-mode only."
+        ),
+    )
+
+    guardrails: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Guardrails this gateway builds and runs itself, keyed by the name a caller sends "
+            "as a guardrail entry's 'profile'. Each entry declares a 'guardrail_name' (the "
+            "any-guardrail class, listed by GET /api/v1/tool-settings/guardrails/catalog), a "
+            "'create_kwargs' mapping of constructor arguments, a 'validate_kwargs' mapping sent "
+            "on every check, and an optional 'enabled' flag. Read-only: a stored guardrail of "
+            "the same name wins. This is the only definition source in hybrid mode, which has "
+            "no database."
         ),
     )
     enable_metrics: bool = Field(
@@ -1906,6 +2030,15 @@ class GatewayConfig(BaseSettings):
             missing,
         )
 
+    def validate_guardrails(self) -> None:
+        """Validate the ``guardrails`` map at startup so a misconfig fails fast.
+
+        Per-entry rules live in :func:`validate_guardrail_entry`, which the
+        runtime CRUD path applies to a dashboard-written guardrail as well.
+        """
+        for name, entry in self.guardrails.items():
+            validate_guardrail_entry(name, entry)
+
     def validate_search_tools(self) -> None:
         """Validate the ``search_tools`` map at startup so misconfig fails fast.
 
@@ -2403,6 +2536,7 @@ def load_config(config_path: str | None = None) -> GatewayConfig:
     config.validate_aliases()
     config.validate_routing_policies()
     config.validate_search_tools()
+    config.validate_guardrails()
     config.validate_mail_transport()
     config.validate_webauthn_relying_party()
     config.warn_about_half_configured_oauth()

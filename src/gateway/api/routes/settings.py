@@ -200,8 +200,10 @@ _DELIBERATELY_OMITTED: tuple[str, ...] = (
     # Structured blocks. ``ConfigField.value`` is bool/int/float/str/list[str],
     # so a dict or a nested model has no representation here at all. Each of
     # these has its own surface where it can be rendered as what it is
-    # (/api/v1/provider-credentials, /api/v1/pricing, /api/v1/routing, /api/v1/search-tools).
+    # (/api/v1/provider-credentials, /api/v1/pricing, /api/v1/routing,
+    # /api/v1/search-tools, /api/v1/guardrail-credentials).
     "aliases",
+    "guardrails",
     "model_capabilities",
     "platform",
     "pricing",
