@@ -1057,6 +1057,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/guardrail-credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List All Guardrails
+         * @description List every guardrail a 'profile' can name.
+         *
+         *     ``stored`` are the editable rows written through this API; ``config`` are the
+         *     config-file entries, which are still honored and are reported so the operator
+         *     can see the whole set. Secrets are never returned, only their names.
+         */
+        get: operations["guardrail-credentials-list_all_guardrails"];
+        put?: never;
+        /**
+         * Create Guardrail
+         * @description Add a guardrail at runtime. Storing a secret requires OTARI_SECRET_KEY.
+         */
+        post: operations["guardrail-credentials-create_guardrail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guardrail-credentials/reencrypt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reencrypt Stored Guardrail Secrets
+         * @description Re-encrypt stored guardrail secrets with the primary OTARI_SECRET_KEY.
+         *
+         *     The guardrail half of the key rotation procedure; run it alongside the
+         *     provider and search-tool ones. Rows that cannot be decrypted are left
+         *     untouched and must be recovered by replacing that guardrail's secrets.
+         */
+        post: operations["guardrail-credentials-reencrypt_stored_guardrail_secrets"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/guardrail-credentials/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Stored Guardrail
+         * @description Delete a stored guardrail. A config-file guardrail cannot be deleted here.
+         */
+        delete: operations["guardrail-credentials-delete_stored_guardrail"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Guardrail
+         * @description Update a stored guardrail. Omitted fields are left as-is.
+         *
+         *     ``create_kwargs`` replaces the stored arguments rather than merging into
+         *     them, so a secret is removed by leaving it out and kept by sending it back as
+         *     ``***``. The row is locked ``FOR UPDATE`` so the ``expected_updated_at`` check
+         *     and the write it guards are atomic.
+         */
+        patch: operations["guardrail-credentials-update_guardrail"];
+        trace?: never;
+    };
+    "/api/v1/guardrail-credentials/{name}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Stored Guardrail
+         * @description Run a stored guardrail once, so an operator sees it work before relying on it.
+         *
+         *     A guardrail that cannot run answers ``ok: false`` with the reason rather than
+         *     an error status: "it did not work, and here is why" is the result the form
+         *     asked for. The reason is the runner's own message, which names types and
+         *     argument names but never an argument's value, and this route is
+         *     operator-only. A disabled guardrail is still testable, since checking one
+         *     before turning it on is the point.
+         */
+        post: operations["guardrail-credentials-test_stored_guardrail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -5728,6 +5836,24 @@ export interface components {
             value: boolean | number | string | string[] | null;
         };
         /**
+         * ConfigGuardrailSchema
+         * @description A guardrail declared in the config file. Read-only: it cannot be edited here.
+         */
+        ConfigGuardrailSchema: {
+            /** Enabled */
+            enabled: boolean;
+            /** Guardrail Name */
+            guardrail_name: string;
+            /** Name */
+            name: string;
+            /**
+             * Shadowed
+             * @description True when a stored guardrail of the same name overrides this entry.
+             * @default false
+             */
+            shadowed: boolean;
+        };
+        /**
          * ConfigSearchToolSchema
          * @description A search tool declared in the config file. Read-only: it cannot be edited here.
          */
@@ -5860,6 +5986,48 @@ export interface components {
              * @description Maximum tokens over the period. Independent of max_budget; null is unlimited
              */
             token_limit?: number | null;
+        };
+        /**
+         * CreateGuardrailRequest
+         * @description Create a stored guardrail. Secrets in ``create_kwargs`` are write-only.
+         * @example {
+         *       "create_kwargs": {
+         *         "api_key": "lakera-live-..."
+         *       },
+         *       "guardrail_name": "lakera_guard",
+         *       "name": "prompt-injection"
+         *     }
+         */
+        CreateGuardrailRequest: {
+            /**
+             * Create Kwargs
+             * @description Constructor arguments, secrets included. Secrets are stored encrypted and never returned.
+             */
+            create_kwargs?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Guardrail Name
+             * @description The any-guardrail class, as listed by GET /api/v1/tool-settings/guardrails/catalog.
+             */
+            guardrail_name: string;
+            /**
+             * Name
+             * @description The name a guardrail entry puts in its 'profile' field.
+             */
+            name: string;
+            /**
+             * Validate Kwargs
+             * @description Arguments sent on every check.
+             */
+            validate_kwargs?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * CreateKeyRequest
@@ -6752,6 +6920,16 @@ export interface components {
             validate_kwargs?: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * GuardrailCredentialsResponse
+         * @description Every guardrail a profile can name, by where it came from.
+         */
+        GuardrailCredentialsResponse: {
+            /** Config */
+            config: components["schemas"]["ConfigGuardrailSchema"][];
+            /** Stored */
+            stored: components["schemas"]["StoredGuardrailSchema"][];
         };
         /**
          * GuardrailParameterSpec
@@ -9036,6 +9214,22 @@ export interface components {
             warm: boolean;
         };
         /**
+         * ReencryptGuardrailsResponse
+         * @description Result of re-encrypting stored guardrail secrets with the primary secret key.
+         */
+        ReencryptGuardrailsResponse: {
+            /**
+             * Reencrypted
+             * @description Number of stored guardrails whose secrets were re-encrypted.
+             */
+            reencrypted: number;
+            /**
+             * Unreadable
+             * @description Number left untouched because their secrets could not be decrypted.
+             */
+            unreadable: number;
+        };
+        /**
          * ReencryptProviderCredentialsResponse
          * @description Result of re-encrypting stored provider keys with the primary secret key.
          */
@@ -9731,6 +9925,58 @@ export interface components {
             message: string;
         };
         /**
+         * StoredGuardrailSchema
+         * @description A runtime-stored guardrail. Secrets are never returned, only their names.
+         */
+        StoredGuardrailSchema: {
+            /**
+             * Create Kwargs
+             * @description Non-secret constructor arguments, as stored.
+             */
+            create_kwargs?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Create Secrets
+             * @description Which constructor secrets are set, each masked. Empty when they cannot be decrypted.
+             */
+            create_secrets?: {
+                [key: string]: string;
+            };
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Decryptable
+             * @description False when the stored secrets cannot be read with the current OTARI_SECRET_KEY. Such a guardrail cannot run, so the dashboard flags it for the operator to fix.
+             * @default true
+             */
+            decryptable: boolean;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Guardrail Name */
+            guardrail_name: string;
+            /** Name */
+            name: string;
+            /**
+             * Shadows Config
+             * @description True when a config-file guardrail of the same name exists; the stored one is in effect.
+             * @default false
+             */
+            shadows_config: boolean;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Validate Kwargs
+             * @description Arguments sent on every check.
+             */
+            validate_kwargs?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
          * StoredProviderResponse
          * @description A runtime-stored provider. The API key is never returned, only ``last4``.
          */
@@ -9816,6 +10062,46 @@ export interface components {
             task_id: string;
             /** Warm */
             warm: boolean;
+        };
+        /**
+         * TestGuardrailRequest
+         * @description Run a stored guardrail once against a sample input.
+         */
+        TestGuardrailRequest: {
+            /** Input Text */
+            input_text: string;
+            /**
+             * Validate Kwargs
+             * @description Merged over the stored ones for this call only.
+             */
+            validate_kwargs?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * TestGuardrailResponse
+         * @description What one guardrail said about the sample input.
+         */
+        TestGuardrailResponse: {
+            /**
+             * Error
+             * @description Why the guardrail could not run, when ok is false.
+             */
+            error?: string | null;
+            /** Explanation */
+            explanation?: string | null;
+            /**
+             * Ok
+             * @description Whether the guardrail ran at all. False means it could not be evaluated.
+             */
+            ok: boolean;
+            /** Score */
+            score?: number | null;
+            /**
+             * Valid
+             * @description True when the input passed, false when it was flagged, null when the verdict was inconclusive.
+             */
+            valid?: boolean | null;
         };
         /**
          * TestProviderRequest
@@ -10060,6 +10346,32 @@ export interface components {
              * @description Maximum tokens over the period. Independent of max_budget; null is unlimited
              */
             token_limit?: number | null;
+        };
+        /**
+         * UpdateGuardrailRequest
+         * @description Update a stored guardrail. Omitted fields are unchanged.
+         */
+        UpdateGuardrailRequest: {
+            /**
+             * Create Kwargs
+             * @description Replaces the stored arguments. Send a secret as '***' to keep it, a new value to rotate it, or leave it out to clear it.
+             */
+            create_kwargs?: {
+                [key: string]: unknown;
+            } | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /**
+             * Expected Updated At
+             * @description Optimistic concurrency: if set, the update 412s unless it matches the stored updated_at.
+             */
+            expected_updated_at?: string | null;
+            /** Guardrail Name */
+            guardrail_name?: string | null;
+            /** Validate Kwargs */
+            validate_kwargs?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * UpdateKeyRequest
@@ -13010,6 +13322,178 @@ export interface operations {
                 content: {
                     "*/*": string;
                     "application/octet-stream": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "guardrail-credentials-list_all_guardrails": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardrailCredentialsResponse"];
+                };
+            };
+        };
+    };
+    "guardrail-credentials-create_guardrail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGuardrailRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoredGuardrailSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "guardrail-credentials-reencrypt_stored_guardrail_secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReencryptGuardrailsResponse"];
+                };
+            };
+        };
+    };
+    "guardrail-credentials-delete_stored_guardrail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "guardrail-credentials-update_guardrail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGuardrailRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoredGuardrailSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    "guardrail-credentials-test_stored_guardrail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestGuardrailRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestGuardrailResponse"];
                 };
             };
             /** @description Validation Error */

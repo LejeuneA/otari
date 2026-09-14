@@ -2667,6 +2667,36 @@
         "title": "ConfigField",
         "type": "object"
       },
+      "ConfigGuardrailSchema": {
+        "description": "A guardrail declared in the config file. Read-only: it cannot be edited here.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "guardrail_name": {
+            "title": "Guardrail Name",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "shadowed": {
+            "default": false,
+            "description": "True when a stored guardrail of the same name overrides this entry.",
+            "title": "Shadowed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "guardrail_name",
+          "enabled"
+        ],
+        "title": "ConfigGuardrailSchema",
+        "type": "object"
+      },
       "ConfigSearchToolSchema": {
         "description": "A search tool declared in the config file. Read-only: it cannot be edited here.",
         "properties": {
@@ -2996,6 +3026,52 @@
           }
         },
         "title": "CreateBudgetRequest",
+        "type": "object"
+      },
+      "CreateGuardrailRequest": {
+        "description": "Create a stored guardrail. Secrets in ``create_kwargs`` are write-only.",
+        "example": {
+          "create_kwargs": {
+            "api_key": "lakera-live-..."
+          },
+          "guardrail_name": "lakera_guard",
+          "name": "prompt-injection"
+        },
+        "properties": {
+          "create_kwargs": {
+            "additionalProperties": true,
+            "description": "Constructor arguments, secrets included. Secrets are stored encrypted and never returned.",
+            "title": "Create Kwargs",
+            "type": "object"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "guardrail_name": {
+            "description": "The any-guardrail class, as listed by GET /api/v1/tool-settings/guardrails/catalog.",
+            "title": "Guardrail Name",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name a guardrail entry puts in its 'profile' field.",
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "validate_kwargs": {
+            "additionalProperties": true,
+            "description": "Arguments sent on every check.",
+            "title": "Validate Kwargs",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "guardrail_name"
+        ],
+        "title": "CreateGuardrailRequest",
         "type": "object"
       },
       "CreateKeyRequest": {
@@ -4784,6 +4860,31 @@
           "profile"
         ],
         "title": "GuardrailConfig",
+        "type": "object"
+      },
+      "GuardrailCredentialsResponse": {
+        "description": "Every guardrail a profile can name, by where it came from.",
+        "properties": {
+          "config": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigGuardrailSchema"
+            },
+            "title": "Config",
+            "type": "array"
+          },
+          "stored": {
+            "items": {
+              "$ref": "#/components/schemas/StoredGuardrailSchema"
+            },
+            "title": "Stored",
+            "type": "array"
+          }
+        },
+        "required": [
+          "stored",
+          "config"
+        ],
+        "title": "GuardrailCredentialsResponse",
         "type": "object"
       },
       "GuardrailParameterSpec": {
@@ -9511,6 +9612,27 @@
         "title": "RecordedPool",
         "type": "object"
       },
+      "ReencryptGuardrailsResponse": {
+        "description": "Result of re-encrypting stored guardrail secrets with the primary secret key.",
+        "properties": {
+          "reencrypted": {
+            "description": "Number of stored guardrails whose secrets were re-encrypted.",
+            "title": "Reencrypted",
+            "type": "integer"
+          },
+          "unreadable": {
+            "description": "Number left untouched because their secrets could not be decrypted.",
+            "title": "Unreadable",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reencrypted",
+          "unreadable"
+        ],
+        "title": "ReencryptGuardrailsResponse",
+        "type": "object"
+      },
       "ReencryptProviderCredentialsResponse": {
         "description": "Result of re-encrypting stored provider keys with the primary secret key.",
         "properties": {
@@ -11104,6 +11226,84 @@
         "title": "SignupResponse",
         "type": "object"
       },
+      "StoredGuardrailSchema": {
+        "description": "A runtime-stored guardrail. Secrets are never returned, only their names.",
+        "properties": {
+          "create_kwargs": {
+            "additionalProperties": true,
+            "description": "Non-secret constructor arguments, as stored.",
+            "title": "Create Kwargs",
+            "type": "object"
+          },
+          "create_secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Which constructor secrets are set, each masked. Empty when they cannot be decrypted.",
+            "title": "Create Secrets",
+            "type": "object"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "decryptable": {
+            "default": true,
+            "description": "False when the stored secrets cannot be read with the current OTARI_SECRET_KEY. Such a guardrail cannot run, so the dashboard flags it for the operator to fix.",
+            "title": "Decryptable",
+            "type": "boolean"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "guardrail_name": {
+            "title": "Guardrail Name",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "shadows_config": {
+            "default": false,
+            "description": "True when a config-file guardrail of the same name exists; the stored one is in effect.",
+            "title": "Shadows Config",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "validate_kwargs": {
+            "additionalProperties": true,
+            "description": "Arguments sent on every check.",
+            "title": "Validate Kwargs",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "guardrail_name"
+        ],
+        "title": "StoredGuardrailSchema",
+        "type": "object"
+      },
       "StoredProviderResponse": {
         "description": "A runtime-stored provider. The API key is never returned, only ``last4``.",
         "properties": {
@@ -11309,6 +11509,89 @@
           "warm"
         ],
         "title": "TaskPool",
+        "type": "object"
+      },
+      "TestGuardrailRequest": {
+        "description": "Run a stored guardrail once against a sample input.",
+        "properties": {
+          "input_text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Input Text",
+            "type": "string"
+          },
+          "validate_kwargs": {
+            "additionalProperties": true,
+            "description": "Merged over the stored ones for this call only.",
+            "title": "Validate Kwargs",
+            "type": "object"
+          }
+        },
+        "required": [
+          "input_text"
+        ],
+        "title": "TestGuardrailRequest",
+        "type": "object"
+      },
+      "TestGuardrailResponse": {
+        "description": "What one guardrail said about the sample input.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the guardrail could not run, when ok is false.",
+            "title": "Error"
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanation"
+          },
+          "ok": {
+            "description": "Whether the guardrail ran at all. False means it could not be evaluated.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "valid": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when the input passed, false when it was flagged, null when the verdict was inconclusive.",
+            "title": "Valid"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "TestGuardrailResponse",
         "type": "object"
       },
       "TestProviderRequest": {
@@ -11829,6 +12112,72 @@
           }
         },
         "title": "UpdateBudgetRequest",
+        "type": "object"
+      },
+      "UpdateGuardrailRequest": {
+        "description": "Update a stored guardrail. Omitted fields are unchanged.",
+        "properties": {
+          "create_kwargs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replaces the stored arguments. Send a secret as '***' to keep it, a new value to rotate it, or leave it out to clear it.",
+            "title": "Create Kwargs"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optimistic concurrency: if set, the update 412s unless it matches the stored updated_at.",
+            "title": "Expected Updated At"
+          },
+          "guardrail_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guardrail Name"
+          },
+          "validate_kwargs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validate Kwargs"
+          }
+        },
+        "title": "UpdateGuardrailRequest",
         "type": "object"
       },
       "UpdateKeyRequest": {
@@ -18513,6 +18862,278 @@
         "summary": "Get File Content",
         "tags": [
           "files"
+        ]
+      }
+    },
+    "/api/v1/guardrail-credentials": {
+      "get": {
+        "description": "List every guardrail a 'profile' can name.\n\n``stored`` are the editable rows written through this API; ``config`` are the\nconfig-file entries, which are still honored and are reported so the operator\ncan see the whole set. Secrets are never returned, only their names.",
+        "operationId": "guardrail-credentials-list_all_guardrails",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailCredentialsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "List All Guardrails",
+        "tags": [
+          "guardrail-credentials"
+        ]
+      },
+      "post": {
+        "description": "Add a guardrail at runtime. Storing a secret requires OTARI_SECRET_KEY.",
+        "operationId": "guardrail-credentials-create_guardrail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGuardrailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredGuardrailSchema"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Create Guardrail",
+        "tags": [
+          "guardrail-credentials"
+        ]
+      }
+    },
+    "/api/v1/guardrail-credentials/reencrypt": {
+      "post": {
+        "description": "Re-encrypt stored guardrail secrets with the primary OTARI_SECRET_KEY.\n\nThe guardrail half of the key rotation procedure; run it alongside the\nprovider and search-tool ones. Rows that cannot be decrypted are left\nuntouched and must be recovered by replacing that guardrail's secrets.",
+        "operationId": "guardrail-credentials-reencrypt_stored_guardrail_secrets",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReencryptGuardrailsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Reencrypt Stored Guardrail Secrets",
+        "tags": [
+          "guardrail-credentials"
+        ]
+      }
+    },
+    "/api/v1/guardrail-credentials/{name}": {
+      "delete": {
+        "description": "Delete a stored guardrail. A config-file guardrail cannot be deleted here.",
+        "operationId": "guardrail-credentials-delete_stored_guardrail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Delete Stored Guardrail",
+        "tags": [
+          "guardrail-credentials"
+        ]
+      },
+      "patch": {
+        "description": "Update a stored guardrail. Omitted fields are left as-is.\n\n``create_kwargs`` replaces the stored arguments rather than merging into\nthem, so a secret is removed by leaving it out and kept by sending it back as\n``***``. The row is locked ``FOR UPDATE`` so the ``expected_updated_at`` check\nand the write it guards are atomic.",
+        "operationId": "guardrail-credentials-update_guardrail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGuardrailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredGuardrailSchema"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Update Guardrail",
+        "tags": [
+          "guardrail-credentials"
+        ]
+      }
+    },
+    "/api/v1/guardrail-credentials/{name}/test": {
+      "post": {
+        "description": "Run a stored guardrail once, so an operator sees it work before relying on it.\n\nA guardrail that cannot run answers ``ok: false`` with the reason rather than\nan error status: \"it did not work, and here is why\" is the result the form\nasked for. The reason is the runner's own message, which names types and\nargument names but never an argument's value, and this route is\noperator-only. A disabled guardrail is still testable, since checking one\nbefore turning it on is the point.",
+        "operationId": "guardrail-credentials-test_stored_guardrail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestGuardrailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestGuardrailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Test Stored Guardrail",
+        "tags": [
+          "guardrail-credentials"
         ]
       }
     },
