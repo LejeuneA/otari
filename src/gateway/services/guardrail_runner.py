@@ -391,3 +391,33 @@ class GuardrailRunner:
             f"guardrail profile {cfg.profile!r} ({name.value}) is missing its packages: {remedy}",
             public_detail=_unevaluated_detail(cfg.profile),
         )
+
+
+# The one runner the process uses, and the one a store write must reach to evict
+# a profile it changed. Created on first use rather than at import, because the
+# class holds `asyncio` locks and tasks that bind to the loop that first touches
+# them: an instance built at import would outlive a lifespan restart and fail
+# from inside asyncio under the next loop. The same shape, and the same reason,
+# as the pooled client in `services/search_backend.py`.
+_runner: GuardrailRunner | None = None
+
+
+def get_guardrail_runner() -> GuardrailRunner:
+    """The process-wide runner, built on the first call from a running loop."""
+    global _runner  # noqa: PLW0603
+
+    if _runner is None:
+        _runner = GuardrailRunner()
+    return _runner
+
+
+def reset_guardrail_runner() -> None:
+    """Drop the runner and everything it has built (shutdown, tests).
+
+    Whatever models it holds become unreachable and are collected; nothing is
+    unloaded explicitly, because upstream offers no way to. A no-op when nothing
+    ever built one, which is every hybrid deployment until otari#1113.
+    """
+    global _runner  # noqa: PLW0603
+
+    _runner = None
