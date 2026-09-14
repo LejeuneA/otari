@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -26,7 +27,7 @@ from sqlmodel import SQLModel
 # rather than redefined: it exists because the engines disagree about
 # ``timezone=True``, and two copies of that reasoning would drift.
 from gateway.models.money import UsdCost, UsdRate
-from gateway.models.secret_fields import redact_secret_like_values
+from gateway.models.secret_fields import REDACTED_VALUE, redact_secret_like_values
 from gateway.models.tenancy import UtcDateTime
 
 
@@ -601,6 +602,67 @@ class SearchToolCredential(Base):
             "last4": self.last4,
             "timeout": self.timeout_seconds,
             "options": redact_secret_like_values(self.options) or {},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class GuardrailCredential(Base):
+    """A guardrail this gateway builds and runs itself, defined through the dashboard.
+
+    The database counterpart of a ``guardrails:`` entry in config.yml, and the
+    row a caller's ``profile`` names. It holds the ``any_guardrail`` class plus
+    the arguments to construct and call it, so a guardrail is defined here rather
+    than in a sidecar's YAML (otari#1108). Standalone mode only.
+
+    Constructor arguments are split across two columns by the catalog's
+    ``secret`` flag rather than by a per-guardrail rule, because the 40
+    guardrails do not share a secret shape: ``bedrock_guardrails`` takes three
+    secrets, ``any_llm`` none. ``create_kwargs`` holds the plain ones and
+    ``encrypted_create_secrets`` holds every secret as one encrypted JSON object,
+    so a guardrail added upstream needing a fourth secret costs no migration.
+    """
+
+    __tablename__ = "guardrail_credentials"
+
+    # The profile a caller sends. Not the any_guardrail class: an operator may
+    # define two profiles on one class with different arguments.
+    name: Mapped[str] = mapped_column(primary_key=True)
+    guardrail_name: Mapped[str] = mapped_column()
+    create_kwargs: Mapped[dict[str, Any]] = mapped_column("create_kwargs", JSON, default=dict)
+    # ``{secret name: value}`` encrypted as one string (``secret_box``). Null when
+    # the guardrail takes no secret, which is the normal state for ``any_llm``.
+    encrypted_create_secrets: Mapped[str | None] = mapped_column(Text)
+    validate_kwargs: Mapped[dict[str, Any]] = mapped_column("validate_kwargs", JSON, default=dict)
+    # Stop a guardrail without losing what it was configured with.
+    enabled: Mapped[bool] = mapped_column(default=True, server_default=true(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    def to_public_dict(self, *, secret_names: Collection[str] = ()) -> dict[str, Any]:
+        """Serialize for the API. Never includes a secret, only which ones are set.
+
+        ``secret_names`` are the keys of the decrypted secrets map, which only the
+        service layer can read; the caller passes them so this stays free of
+        decryption. A row whose secrets cannot be decrypted therefore reports an
+        empty ``create_secrets`` rather than a wrong one.
+
+        ``create_kwargs`` is returned as stored because the split already removed
+        every declared secret from it. ``validate_kwargs`` is masked by key name
+        anyway, for the reason ``SearchToolCredential.options`` is: it is
+        free-form, so a credential an operator put there is not echoed back.
+        """
+        return {
+            "name": self.name,
+            "guardrail_name": self.guardrail_name,
+            "create_kwargs": dict(self.create_kwargs or {}),
+            "create_secrets": {name: REDACTED_VALUE for name in sorted(secret_names)},
+            "validate_kwargs": redact_secret_like_values(self.validate_kwargs) or {},
+            "enabled": self.enabled,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

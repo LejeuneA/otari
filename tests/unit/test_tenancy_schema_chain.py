@@ -67,6 +67,9 @@ _ALIAS_WIDEN_REVISION = "c1e4a7b9d3f6"
 _SURVIVALS_REVISION = "d2f5b8c0e4a7"
 _SURVIVAL_TABLES = ("routing_memory", "router_preferences", "file_objects")
 
+_GUARDRAIL_REVISION = "a7e3c9d1f5b2"
+_GUARDRAIL_TABLE = "guardrail_credentials"
+
 
 def _parent_of(revision: str) -> str:
     """The revision immediately below ``revision``, read from the chain itself.
@@ -958,3 +961,48 @@ def test_the_migrated_survival_tables_match_their_models(sqlite_at_head: tuple[C
         declared = SQLModel.metadata.tables[table]
         migrated = {column["name"] for column in inspect(engine).get_columns(table)}
         assert migrated == set(declared.columns.keys()), table
+
+
+def test_the_guardrail_credentials_revision_round_trips(sqlite_at_head: tuple[Config, Engine]) -> None:
+    """Down drops the table; up puts it back with every column the model declares.
+
+    A plain ``create_table`` has no batch rebuild to get wrong, so what this pins
+    is the pair of things a hand-written revision does get wrong: a column added
+    to the model and not to the migration, and a downgrade that does not undo the
+    upgrade. SQLite specifically, because the integration suite only ever
+    migrates PostgreSQL and the OSS smoke gate runs this chain on SQLite.
+    """
+    config, engine = sqlite_at_head
+
+    command.downgrade(config, _parent_of(_GUARDRAIL_REVISION))
+
+    assert _GUARDRAIL_TABLE not in inspect(engine).get_table_names()
+
+    command.upgrade(config, "head")
+
+    declared = SQLModel.metadata.tables[_GUARDRAIL_TABLE]
+    migrated = {column["name"] for column in inspect(engine).get_columns(_GUARDRAIL_TABLE)}
+    assert migrated == set(declared.columns.keys())
+
+
+def test_a_stored_guardrail_defaults_to_enabled(sqlite_at_head: tuple[Config, Engine]) -> None:
+    """``enabled`` carries a server default, so an insert that omits it is not null.
+
+    The column is non-null, and the row is written by a service that always sets
+    it. The default is what keeps a hand-written insert, a fixture or a later
+    backfill from failing on a column nobody thought about.
+    """
+    _, engine = sqlite_at_head
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO guardrail_credentials "
+                "(name, guardrail_name, create_kwargs, validate_kwargs, created_at, updated_at) "
+                "VALUES ('prompt-injection', 'lakera_guard', '{}', '{}', "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        enabled = connection.execute(text("SELECT enabled FROM guardrail_credentials")).scalar_one()
+
+    assert enabled
