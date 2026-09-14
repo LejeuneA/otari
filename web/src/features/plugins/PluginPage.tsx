@@ -12,9 +12,12 @@ import { usePlugins } from "@/shared/api/plugins"
  *
  * The gateway serves the plugin's static files at `ui.url`, on this origin, so
  * the frame authenticates with the same session cookie the dashboard holds and
- * needs nothing passed in. The sandbox keeps scripts, forms, and same-origin
- * access, which is what a page that calls the plugin's own API needs, and
- * withholds the rest (top navigation, pointer lock, modals over this page).
+ * needs nothing passed in. The `sandbox` attribute keeps scripts, forms, and
+ * same-origin access, which is what a page that calls the plugin's own API
+ * needs; with same-origin access granted it is not a trust boundary, and it
+ * is not meant as one: the plugin already runs inside the gateway. It only
+ * keeps a page from navigating the top window or locking the pointer by
+ * accident.
  *
  * The frame is what scrolls: the page fills the content area and hands the
  * height to the frame, so an operator scrolls the plugin, not the dashboard

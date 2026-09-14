@@ -48,7 +48,7 @@ EmptyMessage: { children, minHeight? }
 PageLoading: { label = "Loading…" }
 PageError: { error: unknown, children? }
 ConfirmDialog: { isOpen, onOpenChange, heading, body, confirmLabel, onConfirm,
-  confirmVariant = "danger", isPending?, error? }
+  confirmVariant = "danger", isConfirmDisabled?, isPending?, error? }
 FormDialog: { isOpen, onOpenChange, title, description?, size = "md",
   submitLabel, onSubmit, isPending, error?, isDirty?, isDismissable = true,
   isSubmitDisabled?, returnFocusRef?, footerStart?, tabs?, children }

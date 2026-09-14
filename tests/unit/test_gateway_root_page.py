@@ -212,6 +212,61 @@ def test_dashboard_without_pwa_dir_still_starts(tmp_path: Path, monkeypatch: pyt
     assert manifest.status_code == 404
 
 
+def _bundle_with_stylesheets(tmp_path: Path, stylesheets: list[str], linked: str | None) -> Path:
+    """A synthetic bundle whose ``assets/`` holds ``stylesheets`` and whose page links ``linked``."""
+    bundle = tmp_path / "dashboard"
+    (bundle / "assets").mkdir(parents=True)
+    for name in stylesheets:
+        (bundle / "assets" / name).write_text(f"/* {name} */")
+    link = f'<link rel="stylesheet" crossorigin href="/assets/{linked}">' if linked else ""
+    (bundle / "index.html").write_text(f'<html><head>{link}</head><body><div id="root"></div></body></html>')
+    return bundle
+
+
+def test_dashboard_stylesheet_is_the_one_the_page_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two files under assets/, as a code-split chunk with CSS of its own leaves
+    # there. The one that sorts first is the chunk's, not the entry's.
+    bundle = _bundle_with_stylesheets(tmp_path, ["Chart-Dq1x.css", "index-C27BbIAL.css"], linked="index-C27BbIAL.css")
+    monkeypatch.setattr(gateway_main, "get_dashboard_dir", lambda: bundle)
+    app = create_app(_config(tmp_path, "gateway-stylesheet-test.db"))
+
+    with TestClient(app) as client:
+        response = client.get("/dashboard.css")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/css")
+    assert response.headers["cache-control"] == "public, max-age=300"
+    assert response.text == "/* index-C27BbIAL.css */"
+
+
+def test_dashboard_stylesheet_is_absent_when_the_page_links_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = _bundle_with_stylesheets(tmp_path, ["index-C27BbIAL.css"], linked=None)
+    monkeypatch.setattr(gateway_main, "get_dashboard_dir", lambda: bundle)
+    app = create_app(_config(tmp_path, "gateway-no-stylesheet-test.db"))
+
+    with TestClient(app) as client:
+        response = client.get("/dashboard.css")
+
+    assert response.status_code == 404
+
+
+@requires_dashboard_bundle
+def test_dashboard_stylesheet_matches_the_built_bundle(tmp_path: Path) -> None:
+    app = create_app(_config(tmp_path, "gateway-built-stylesheet-test.db"))
+
+    with TestClient(app) as client:
+        index = client.get("/").text
+        link = re.search(r'href="(/assets/[^"]+\.css)"', index)
+        assert link is not None, "index.html links no stylesheet"
+        linked = client.get(link.group(1))
+        stable = client.get("/dashboard.css")
+
+    assert stable.status_code == 200
+    assert stable.content == linked.content
+
+
 def _hybrid_config(tmp_path: Path, name: str) -> GatewayConfig:
     """A gateway attached to a control plane, which is what selects hybrid mode."""
     return GatewayConfig(

@@ -10,6 +10,7 @@ page when it is absent.
 """
 
 import hashlib
+import re
 from importlib import resources
 from pathlib import Path
 
@@ -43,3 +44,20 @@ def get_dashboard_build_id(dashboard_dir: Path) -> str:
     serves and should offer to reload.
     """
     return hashlib.sha256((dashboard_dir / "index.html").read_bytes()).hexdigest()[:16]
+
+
+_STYLESHEET_LINK = re.compile(r'<link\b[^>]*\brel="stylesheet"[^>]*\bhref="/assets/([^"/]+\.css)"')
+
+
+def get_dashboard_stylesheet(dashboard_dir: Path) -> Path | None:
+    """The stylesheet ``index.html`` links, which is the one the app wears.
+
+    Read from the page rather than globbed from ``assets/``: Vite splits CSS by
+    chunk, so a lazily loaded route can leave a second file there, and a glob
+    cannot tell the entry's stylesheet from a chunk's.
+    """
+    match = _STYLESHEET_LINK.search((dashboard_dir / "index.html").read_text())
+    if match is None:
+        return None
+    stylesheet = dashboard_dir / "assets" / match.group(1)
+    return stylesheet if stylesheet.is_file() else None

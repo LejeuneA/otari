@@ -18,7 +18,12 @@ from gateway.api.main import register_routers
 from gateway.container import build_container
 from gateway.core.config import API_KEY_HEADER, API_ROOT, GATEWAY_TOKEN_HEADER, X_API_KEY_HEADER, GatewayConfig
 from gateway.core.database import create_session, dispose_db, init_db
-from gateway.dashboard import DASHBOARD_PACKAGE_PATH, get_dashboard_build_id, get_dashboard_dir
+from gateway.dashboard import (
+    DASHBOARD_PACKAGE_PATH,
+    get_dashboard_build_id,
+    get_dashboard_dir,
+    get_dashboard_stylesheet,
+)
 from gateway.inflight import InFlightMiddleware, InFlightRegistry
 from gateway.log_config import logger
 from gateway.plugins import load_plugins
@@ -174,7 +179,7 @@ def _under(path: str, prefixes: tuple[str, ...]) -> bool:
 # Public, unauthenticated static assets that shared caches may keep. Paths here
 # set their own Cache-Control at the route (favicon.svg), so the middleware only
 # fills one in when it is missing.
-_CACHEABLE_PATHS = ("/favicon.svg",)
+_CACHEABLE_PATHS = ("/favicon.svg", "/dashboard.css")
 # Vite stamps a content hash into every /assets filename, so a given URL is
 # immutable; the middleware marks these public and cacheable for a year, since
 # StaticFiles does not set Cache-Control on its own.
@@ -765,10 +770,13 @@ def create_app(config: GatewayConfig) -> FastAPI:
         # request, since the hashed name changes with every build.
         @app.get("/dashboard.css", include_in_schema=False)
         async def dashboard_stylesheet() -> Response:
-            stylesheets = sorted((dashboard_dir / "assets").glob("*.css"))
-            if not stylesheets:
+            stylesheet = get_dashboard_stylesheet(dashboard_dir)
+            if stylesheet is None:
                 return JSONResponse({"detail": "Not Found"}, status_code=status.HTTP_404_NOT_FOUND)
-            return FileResponse(stylesheets[0], media_type="text/css")
+            # Public like the page that links it, but a stable name rather than a
+            # content hash, and FileResponse answers no conditional request: a
+            # few minutes keeps a rebuilt theme from lingering in a frame.
+            return FileResponse(stylesheet, media_type="text/css", headers={"Cache-Control": "public, max-age=300"})
     else:
         # A missing bundle means nobody built it, which is the ordinary state of a
         # source checkout now that the bundle is gitignored rather than committed.

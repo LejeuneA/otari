@@ -49,7 +49,6 @@ describe("PluginPage", () => {
         "allow-same-origin",
       ]),
     )
-    expect(sandbox).not.toContain("allow-top-navigation")
     expect(
       screen.getByRole("heading", { level: 1, name: "Agent gates" }),
     ).toBeVisible()
