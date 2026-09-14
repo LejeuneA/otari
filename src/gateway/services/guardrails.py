@@ -11,6 +11,12 @@ HTTP API. The only endpoint we call is::
 ``prompt-injection`` profile — Deepset in-process, or DuoGuard via an
 encoderfile — detected a prompt injection).
 
+A profile does not have to reach that service at all. One this gateway defines
+itself, in a ``guardrails:`` config entry or a stored row, runs in this process
+through ``run_local``; see :func:`run_input_guardrails` for how a profile
+resolves. The service stays the fallback, and an entry naming its own ``url``
+always goes there.
+
 Unlike the sandbox / web-search backends, this does **not** duck-type the MCP
 tool-loop ``pool`` protocol: guardrails never enter the tool loop. It is a flat
 pre-provider interceptor — see :func:`run_input_guardrails`, which the three
@@ -27,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 
 import httpx
@@ -86,6 +92,16 @@ class GuardrailResult:
         flagged* — we don't block on an inconclusive result.
         """
         return self.valid is False
+
+
+LocalGuardrail = Callable[[GuardrailConfig, str], Awaitable[GuardrailResult | None]]
+"""Runs a profile in this process, or answers ``None`` when nothing defines it here.
+
+Injected rather than imported. :mod:`gateway.services.guardrail_runner` imports
+this module for the error and result types both paths share, so the dependency
+cannot also run the other way; what builds the callable is
+:func:`gateway.services.guardrail_store_service.run_local_guardrail`, above both.
+"""
 
 
 @dataclass
@@ -175,6 +191,7 @@ async def run_input_guardrails(
     default_url: str | None,
     credentials: Mapping[str, str] | None = None,
     mandated: Collection[str] | None = None,
+    run_local: LocalGuardrail | None = None,
 ) -> GuardrailVerdict:
     """Run every input-direction guardrail and return the aggregate verdict.
 
@@ -197,6 +214,17 @@ async def run_input_guardrails(
     is parsed from the request body: a credential field there would be one a
     caller could set, which would turn the guardrail list into a way to make
     this gateway send a secret to an endpoint of the caller's choosing.
+
+    ``run_local`` runs a profile this gateway defines itself, and answers ``None``
+    for one it does not. Each entry resolves in that order: a profile with no
+    ``url`` that ``run_local`` claims runs here, and everything else goes to
+    ``cfg.url or default_url``. An entry naming its own ``url`` is never offered
+    to ``run_local`` at all, because that URL is a deliberate remote backend; it
+    is also the only way an entry carries a credential
+    (``organization_guardrail_service`` refuses one without a ``url``), so the
+    rule is what keeps a stored credential from being silently dropped. With no
+    ``run_local`` every profile goes to the service, which is what this did
+    before there was anywhere else for one to run.
 
     Only guardrails with ``"input"`` in :attr:`GuardrailConfig.on` are
     *evaluated* here (``"output"`` is accepted but not yet enforced — see the
@@ -297,20 +325,29 @@ async def run_input_guardrails(
                         f"safety check: {unsafe_url}",
                         public_detail=_unevaluated_detail(cfg.profile),
                     )
-                if not base_url:
-                    raise GuardrailsNotReachableError(
-                        f"guardrail profile {cfg.profile!r} requested but no guardrails service is "
-                        "configured. Set OTARI_GUARDRAILS_URL on the gateway or pass `url` on the "
-                        "guardrail entry.",
-                        public_detail=_unevaluated_detail(cfg.profile),
+                # Resolved per entry, not once for the request: two profiles in
+                # one request may well be a local definition and a sidecar one.
+                result = None
+                if cfg.url is None and run_local is not None:
+                    result = await run_local(cfg, input_text)
+                if result is None:
+                    if not base_url:
+                        # Reached only when nothing here defines the profile
+                        # either, so the log names all three ways to fix it.
+                        raise GuardrailsNotReachableError(
+                            f"guardrail profile {cfg.profile!r} is not defined on this gateway and no "
+                            "guardrails service is configured. Define it (config.yml `guardrails:` or "
+                            "POST /api/v1/guardrail-credentials), set OTARI_GUARDRAILS_URL, or pass "
+                            "`url` on the guardrail entry.",
+                            public_detail=_unevaluated_detail(cfg.profile),
+                        )
+                    result = await _validate_one(
+                        client,
+                        base_url=base_url,
+                        cfg=cfg,
+                        input_text=input_text,
+                        credential=credentials.get(cfg.profile),
                     )
-                result = await _validate_one(
-                    client,
-                    base_url=base_url,
-                    cfg=cfg,
-                    input_text=input_text,
-                    credential=credentials.get(cfg.profile),
-                )
             except GuardrailsNotReachableError as exc:
                 if cfg.mode == "block" and cfg.on_unavailable == "block":
                     raise  # fail closed: an enforcing guardrail must not be skipped

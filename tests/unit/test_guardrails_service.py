@@ -14,7 +14,11 @@ import httpx
 import pytest
 
 from gateway.models.guardrails import GuardrailConfig
-from gateway.services.guardrails import GuardrailsNotReachableError, run_input_guardrails
+from gateway.services.guardrails import (
+    GuardrailResult,
+    GuardrailsNotReachableError,
+    run_input_guardrails,
+)
 from gateway.services.url_safety import UnsafeURLError
 
 _URL = "http://anyguardrails:8000"
@@ -435,3 +439,204 @@ async def test_a_callers_own_bad_url_is_still_their_malformed_request(monkeypatc
         )
 
     assert "guardrails.internal.corp.example" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# Running a guardrail in this process
+# --------------------------------------------------------------------------- #
+#
+# `run_local` is the seam the request path injects. It answers None for a profile
+# this gateway defines nowhere, which is what keeps the HTTP path the fallback
+# rather than a second branch to keep in step. What builds the real one is
+# `guardrail_store_service.run_local_guardrail`; here it is a fake, so these
+# tests are about the branch and not about the runner.
+
+
+def _resolvable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every hostname resolve to a public IP, so a `url` passes the safety check."""
+    from gateway.services import url_safety
+
+    async def _fake_resolve(_host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+        return [ipaddress.ip_address("93.184.216.34")]
+
+    monkeypatch.setattr(url_safety, "_resolve_all_async", _fake_resolve)
+
+
+def _refuse_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any outbound guardrail call a failure, so a local check proves it stayed local."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"a locally defined guardrail must not call {request.url}")
+
+    _patch_transport(monkeypatch, handler)
+
+
+def _local(result: object) -> Callable[[GuardrailConfig, str], object]:
+    """A `run_local` that answers with `result`, recording what it was asked."""
+
+    async def run_local(cfg: GuardrailConfig, input_text: str) -> GuardrailResult | None:
+        run_local.seen.append(cfg.profile)  # type: ignore[attr-defined]
+        if isinstance(result, BaseException):
+            raise result
+        if result is None:
+            return None
+        return GuardrailResult(profile=cfg.profile, mode=cfg.mode, valid=bool(result), score=0.9)
+
+    run_local.seen = []  # type: ignore[attr-defined]
+    return run_local
+
+
+@pytest.mark.asyncio
+async def test_a_locally_defined_guardrail_never_reaches_the_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The point of the feature: no sidecar, and no URL needed to run the check."""
+    _refuse_http(monkeypatch)
+    run_local = _local(False)
+
+    verdict = await run_input_guardrails(
+        [GuardrailConfig(profile="prompt-injection", mode="block")],
+        "x",
+        default_url=None,
+        run_local=run_local,
+    )
+
+    assert verdict.blocked is True
+    assert run_local.seen == ["prompt-injection"]  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_profile_defined_nowhere_falls_back_to_the_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_transport(monkeypatch, _result_handler({"valid": True}))
+
+    verdict = await run_input_guardrails(
+        [GuardrailConfig(profile="prompt-injection", mode="block")],
+        "x",
+        default_url=_URL,
+        run_local=_local(None),
+    )
+
+    assert verdict.blocked is False
+    assert verdict.results[0].valid is True
+
+
+@pytest.mark.asyncio
+async def test_an_entry_that_names_its_own_url_is_never_run_locally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `url` is a deliberate remote backend, so it wins over a local definition.
+
+    It is also what keeps an organization entry's stored credential working: that
+    credential exists only for the endpoint the entry names, and running the check
+    here would quietly drop it.
+    """
+    _resolvable(monkeypatch)
+    _patch_transport(monkeypatch, _result_handler({"valid": True}))
+    run_local = _local(False)
+
+    verdict = await run_input_guardrails(
+        [GuardrailConfig(profile="prompt-injection", mode="block", url="https://guardrails.example.com")],
+        "x",
+        default_url=None,
+        run_local=run_local,
+    )
+
+    assert verdict.blocked is False, "the service answered, not the local definition"
+    assert run_local.seen == [], "the resolver was not even consulted"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_credential_entry_is_never_run_locally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The invariant behind the rule above, asserted rather than assumed.
+
+    `organization_guardrail_service` refuses a credential without a `url`, so an
+    entry carrying one always takes the remote branch and the credential is never
+    silently dropped.
+    """
+    _resolvable(monkeypatch)
+    _patch_transport(monkeypatch, _result_handler({"valid": True}))
+    run_local = _local(False)
+
+    await run_input_guardrails(
+        [GuardrailConfig(profile="prompt-injection", url="https://guardrails.example.com")],
+        "x",
+        default_url=None,
+        credentials={"prompt-injection": "s3cret"},
+        mandated={"prompt-injection"},
+        run_local=run_local,
+    )
+
+    assert run_local.seen == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_an_in_process_failure_fails_closed_for_an_enforcing_guardrail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runner raises the same error the HTTP path does, so the same arm governs it."""
+    _refuse_http(monkeypatch)
+    failure = GuardrailsNotReachableError(
+        "guardrail profile 'prompt-injection' (lakera_guard) failed in-process: RuntimeError",
+        public_detail="guardrail profile 'prompt-injection' could not be evaluated",
+    )
+
+    with pytest.raises(GuardrailsNotReachableError) as exc:
+        await run_input_guardrails(
+            [GuardrailConfig(profile="prompt-injection", mode="block")],
+            "x",
+            default_url=None,
+            run_local=_local(failure),
+        )
+
+    assert "lakera_guard" in str(exc.value), "the log gets the guardrail"
+    assert exc.value.public_detail == "guardrail profile 'prompt-injection' could not be evaluated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "on_unavailable"),
+    [("monitor", "block"), ("block", "monitor")],
+)
+async def test_an_in_process_failure_fails_open_when_the_entry_says_so(
+    monkeypatch: pytest.MonkeyPatch, mode: str, on_unavailable: str
+) -> None:
+    _refuse_http(monkeypatch)
+    failure = GuardrailsNotReachableError("boom", public_detail="nope")
+
+    verdict = await run_input_guardrails(
+        [GuardrailConfig(profile="prompt-injection", mode=mode, on_unavailable=on_unavailable)],
+        "x",
+        default_url=None,
+        run_local=_local(failure),
+    )
+
+    assert verdict.blocked is False
+    assert verdict.results[0].valid is None
+
+
+@pytest.mark.asyncio
+async def test_one_request_can_mix_a_local_and_a_remote_guardrail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolution is per profile, so the two paths coexist in one request."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        profile = json.loads(request.content)["profile"]
+        seen.append(profile)
+        return httpx.Response(200, json={"profile": profile, "result": {"valid": True}})
+
+    _patch_transport(monkeypatch, handler)
+
+    async def run_local(cfg: GuardrailConfig, _input_text: str) -> GuardrailResult | None:
+        if cfg.profile != "prompt-injection":
+            return None
+        return GuardrailResult(profile=cfg.profile, mode=cfg.mode, valid=True)
+
+    verdict = await run_input_guardrails(
+        [GuardrailConfig(profile="prompt-injection"), GuardrailConfig(profile="pii")],
+        "x",
+        default_url=_URL,
+        run_local=run_local,
+    )
+
+    assert seen == ["pii"], "only the profile nothing defines here went out"
+    assert [r.profile for r in verdict.results] == ["prompt-injection", "pii"]

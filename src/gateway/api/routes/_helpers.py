@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import uuid
 from collections.abc import Collection, Mapping, Sequence
@@ -15,6 +16,7 @@ from gateway.core.env import otari_env
 from gateway.log_config import logger
 from gateway.models.guardrails import GuardrailConfig
 from gateway.models.tenancy import Workspace
+from gateway.services.guardrail_store_service import run_local_guardrail
 from gateway.services.guardrails import GuardrailsNotReachableError, run_input_guardrails
 from gateway.services.routing.decide import RoutingSignal
 from gateway.services.url_safety import UnsafeURLError
@@ -294,7 +296,9 @@ async def apply_input_guardrails(
     :func:`gateway.services.guardrails.run_input_guardrails`): a ``block``
     guardrail that can't be evaluated fails closed (``502``) unless it sets
     ``on_unavailable="monitor"``; a ``monitor`` guardrail fails open (logged,
-    request proceeds).
+    request proceeds). "Can't be evaluated" covers a guardrail that runs here as
+    well as one that runs in the service, because the runner raises the same
+    error; which of the two a profile takes is resolved per entry from ``config``.
 
     Note:
         The header is set on the injected ``response``, so it reaches
@@ -319,6 +323,10 @@ async def apply_input_guardrails(
     # the env var when no config is threaded in (e.g. unit tests). A dashboard
     # override mutates config, so it hot-applies on the next request.
     default_url = (config.guardrails_url if config is not None else None) or otari_env("GUARDRAILS_URL") or None
+    # A profile this deployment defines itself runs in-process; the service is
+    # the fallback. Needs the config to resolve against, so a caller that threads
+    # none in (a unit test) gets the pre-1113 behavior of always going remote.
+    run_local = None if config is None else functools.partial(run_local_guardrail, config)
     try:
         verdict = await run_input_guardrails(
             guardrails,
@@ -326,6 +334,7 @@ async def apply_input_guardrails(
             default_url=default_url,
             credentials=credentials,
             mandated=mandated,
+            run_local=run_local,
         )
     except UnsafeURLError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

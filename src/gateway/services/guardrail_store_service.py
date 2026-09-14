@@ -52,9 +52,11 @@ from gateway.core.config import GatewayConfig, validate_guardrail_create_kwargs
 from gateway.core.database import create_session
 from gateway.log_config import logger
 from gateway.models.entities import GuardrailCredential
+from gateway.models.guardrails import GuardrailConfig
 from gateway.models.secret_fields import REDACTED_VALUE, restore_redacted_values
 from gateway.services.guardrail_catalog import _specs_for_stage
-from gateway.services.guardrail_runner import GuardrailDefinition
+from gateway.services.guardrail_runner import GuardrailDefinition, get_guardrail_runner
+from gateway.services.guardrails import GuardrailResult
 from gateway.services.secret_box import (
     SecretBoxUnavailableError,
     SecretDecryptionError,
@@ -348,6 +350,28 @@ async def run_guardrail_refresher(interval: float = GUARDRAIL_CACHE_TTL_SECONDS)
             raise
         except Exception:
             logger.warning("Stored guardrail refresh failed; retrying in %ss", interval, exc_info=True)
+
+
+async def run_local_guardrail(
+    config: GatewayConfig, cfg: GuardrailConfig, input_text: str
+) -> GuardrailResult | None:
+    """Run ``cfg``'s profile in this process, or answer ``None`` if none is defined here.
+
+    The ``run_local`` the request path injects into
+    :func:`gateway.services.guardrails.run_input_guardrails`, bound to a config.
+    A service function rather than a closure built in the API layer, so the
+    resolution and the run can be tested without a request.
+
+    Raises only :class:`GuardrailsNotReachableError`, because the runner turns
+    every failure into one, so the caller's ``mode`` / ``on_unavailable``
+    handling governs an in-process check exactly as it governs a remote one.
+    Opens no session and decrypts nothing: the overlay already holds definitions
+    in clear.
+    """
+    definition = local_guardrail_definition(config, cfg.profile)
+    if definition is None:
+        return None
+    return await get_guardrail_runner().run(definition=definition, cfg=cfg, input_text=input_text)
 
 
 # --------------------------------------------------------------------------- #
