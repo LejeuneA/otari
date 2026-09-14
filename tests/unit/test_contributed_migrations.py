@@ -7,10 +7,13 @@ ships: an ``env.py`` honoring the ``version_table`` attribute and one revision
 creating a table of its own.
 """
 
+import sys
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from click.testing import CliRunner
 from sqlalchemy import create_engine, inspect, text
 
 from gateway.container import MigrationContribution
@@ -99,3 +102,45 @@ def test_auto_migrate_off_runs_no_chain(tmp_path: Path) -> None:
 
     # The async engine is lazy, so with no chain run nothing has created the file.
     assert not db_path.exists()
+
+
+def test_the_migrate_command_runs_the_contributed_chain_on_a_real_database(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """``otari migrate`` is the whole schema, not just Otari's half.
+
+    The command a deployment with ``auto_migrate`` off runs by hand. Asserted
+    against a real database rather than a stubbed runner, because what broke
+    here before was the command reaching a different chain-runner than the boot
+    path did.
+    """
+    import gateway.cli as gateway_cli
+
+    (tmp_path / "demo_bootstrap.py").write_text(
+        "from gateway.container import MigrationContribution\n\n\n"
+        "def register(container):\n"
+        "    container.contribute_migrations(\n"
+        f"        MigrationContribution(name={PLUGIN.name!r}, script_location={PLUGIN.script_location!r}, "
+        f"version_table={PLUGIN.version_table!r})\n"
+        "    )\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("demo_bootstrap", None)
+
+    url = f"sqlite:///{tmp_path / 'cli-migrated.db'}"
+    monkeypatch.setattr(
+        gateway_cli,
+        "load_config",
+        lambda config_path=None: GatewayConfig(
+            database_url=url, auto_migrate=False, bootstrap="demo_bootstrap:register"
+        ),
+    )
+
+    result = CliRunner().invoke(gateway_cli.cli, ["migrate"])
+    sys.modules.pop("demo_bootstrap", None)
+
+    assert result.exit_code == 0, result.output
+    tables = _tables(url)
+    assert "alembic_version" in tables and PLUGIN.version_table in tables
+    assert "plugin_demo" in tables
+    assert _version_rows(url, PLUGIN.version_table) == [_head(_PLUGIN_ALEMBIC)]

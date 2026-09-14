@@ -427,15 +427,20 @@ key in a way that would block a core migration: the core chain runs first and
 knows nothing about contributed tables, so a core revision that drops or
 rebuilds a table the contribution points at fails on a constraint the core
 chain did not create. Prefer plain indexed id columns over enforced foreign
-keys into core tables. And `otari migrate` runs the core chain only; a deployment that
-migrates with the CLI instead of on startup has to run each contributed chain
-itself for now. Hybrid mode skips database initialization entirely, contributed
-chains included, since it has no local database.
+keys into core tables. And hybrid mode skips database initialization entirely,
+contributed chains included, since it has no local database.
+
+`otari migrate` and `otari init-db` run the same chains from the same
+container, so a deployment that migrates out of band gets a plugin's tables
+without doing anything extra. `otari migrate --revision` is the exception: a
+revision names one in Otari's own chain, which a contributed history knows
+nothing about, so pinning core leaves the contributed chains where they are and
+the command says so.
 
 Contributed chains run under Otari's existing `auto_migrate` gate and get no
 knob of their own. Setting `auto_migrate` to true is already a deployment's
 explicit acceptance of boot-time DDL, and registering a bootstrap that
 contributes a chain is a second explicit choice, so a third switch would only
 add a way for a deployment to be half configured. A deployment that does not
-want DDL at boot turns `auto_migrate` off and migrates out of band, which holds
+want DDL at boot turns `auto_migrate` off and runs `otari migrate`, which holds
 for contributed chains exactly as it does for Otari's own.

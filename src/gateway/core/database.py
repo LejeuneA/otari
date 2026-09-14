@@ -99,8 +99,22 @@ def _alembic_config(script_location: str, database_url: str) -> Config:
     return alembic_cfg
 
 
-def _run_migrations(database_url: str, contributions: Iterable[MigrationContribution] = ()) -> None:
-    """Upgrade Otari's own chain to ``head``, then each contributed chain in turn.
+def run_migrations(
+    database_url: str,
+    contributions: Iterable[MigrationContribution] = (),
+    *,
+    revision: str = "head",
+) -> None:
+    """Upgrade Otari's own chain to ``revision``, then each contributed chain to head.
+
+    Public because ``otari migrate`` runs it too. The out-of-band path and the
+    boot path being one function is the point: a deployment on
+    ``auto_migrate=false`` is the one that most needs a plugin's tables to
+    appear, and two implementations would drift there first.
+
+    ``revision`` names a revision in Otari's own chain. A contributed chain has
+    a history of its own and is always taken to its head, so a caller pinning
+    core to an older revision passes no contributions.
 
     Every chain runs against the same URL, offered both as ``sqlalchemy.url``
     and as ``config.attributes["database_url"]``. A contributed chain keeps its
@@ -113,7 +127,7 @@ def _run_migrations(database_url: str, contributions: Iterable[MigrationContribu
     share a row.
     """
     alembic_dir = Path(__file__).resolve().parents[3] / "alembic"
-    command.upgrade(_alembic_config(str(alembic_dir), database_url), "head")
+    command.upgrade(_alembic_config(str(alembic_dir), database_url), revision)
     for contribution in contributions:
         logger.info(
             "Running contributed migration chain %s (version table %s)",
@@ -289,8 +303,8 @@ def init_db(config: GatewayConfig, *, migration_contributions: Iterable[Migratio
 
     With ``auto_migrate`` on, Otari's own chain runs first and then each of
     ``migration_contributions`` (recorded on the container by a bootstrap, see
-    ``gateway.container.MigrationContribution``). ``otari migrate`` runs the
-    core chain only.
+    ``gateway.container.MigrationContribution``). ``otari migrate`` and
+    ``otari init-db`` run the same chains, from the same container.
 
     Each contributed chain is handed the database URL both as
     ``sqlalchemy.url`` and as ``config.attributes["database_url"]``, and its
@@ -349,7 +363,7 @@ def init_db(config: GatewayConfig, *, migration_contributions: Iterable[Migratio
         _LogSessionLocal = async_sessionmaker(_log_engine, expire_on_commit=False)
 
     if config.auto_migrate:
-        _run_migrations(database_url, migration_contributions)
+        run_migrations(database_url, migration_contributions)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
