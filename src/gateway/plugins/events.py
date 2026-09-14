@@ -41,6 +41,9 @@ class Event:
 Handler = Callable[[Event], Any]
 
 DEFAULT_EVENT_TIMEOUT_MS = 5_000
+# Handlers in flight at once, across every plugin. Past it an emit drops its
+# event rather than queue without bound behind a handler that cannot keep up.
+MAX_IN_FLIGHT = 1_000
 
 
 class EventBus:
@@ -54,6 +57,8 @@ class EventBus:
             self._handlers.setdefault(name, []).append((plugin, handler))
         self._timeout = timeout_ms / 1000
         self._tasks: set[asyncio.Task[None]] = set()
+        self._dropped = 0
+        self._last_drop_log = 0.0
 
     def __bool__(self) -> bool:
         return bool(self._handlers)
@@ -86,6 +91,18 @@ class EventBus:
         """Schedule every handler for ``name``; return how many were scheduled."""
         handlers = self.handlers_for(name)
         if not handlers:
+            return 0
+        if len(self._tasks) >= MAX_IN_FLIGHT:
+            self._dropped += 1
+            now = time.monotonic()
+            if now - self._last_drop_log > 10:
+                self._last_drop_log = now
+                logger.warning(
+                    "Plugin events: %d handlers in flight; %s dropped (%d dropped so far)",
+                    len(self._tasks),
+                    name,
+                    self._dropped,
+                )
             return 0
         event = Event(name=name, payload=payload)
         loop = asyncio.get_running_loop()

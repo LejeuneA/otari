@@ -9817,11 +9817,6 @@
             "title": "Settings",
             "type": "array"
           },
-          "supported_here": {
-            "description": "Whether this gateway provides that plugin API version.",
-            "title": "Supported Here",
-            "type": "boolean"
-          },
           "version": {
             "title": "Version",
             "type": "string"
@@ -9832,7 +9827,6 @@
           "version",
           "description",
           "plugin_api",
-          "supported_here",
           "modes",
           "contributes",
           "config_keys"

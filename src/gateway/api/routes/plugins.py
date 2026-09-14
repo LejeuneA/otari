@@ -107,7 +107,6 @@ class PluginManifestSummary(BaseModel):
     version: str
     description: str
     plugin_api: int = Field(description="The plugin API version it is written against.")
-    supported_here: bool = Field(description="Whether this gateway provides that plugin API version.")
     modes: list[RuntimeMode] = Field(description="The runtime modes it loads in.")
     homepage: str | None = None
     getting_started: str | None = Field(default=None, description="A page that walks a new user through setup.")
@@ -400,11 +399,6 @@ async def update_plugin_settings(
         values = validate_plugin_settings(plugin.manifest, body.values)
     except PluginSettingsError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
-    try:
-        await save_plugin_settings(db, plugin.name, values, plugin.manifest)
-    except SecretBoxUnavailableError as error:
-        # Names the environment variable and nothing else; the value never left the request.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     # Applied after the write, like the gateway's own runtime overrides: a
     # cleared key falls back to config.yml's value, else the manifest default.
     raw_config = request.app.state.config.plugins.plugin_settings(plugin.name)
@@ -414,6 +408,15 @@ async def update_plugin_settings(
             applied[key] = value
         else:
             applied[key] = raw_config.get(key, plugin.manifest.settings[key].default)
+    # The plugin's own check, on the values as they would apply, before anything is written.
+    refusal = await registry.validate_settings(plugin.name, {**plugin.config, **applied})
+    if refusal is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=refusal)
+    try:
+        await save_plugin_settings(db, plugin.name, values, plugin.manifest)
+    except SecretBoxUnavailableError as error:
+        # Names the environment variable and nothing else; the value never left the request.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     if plugin.status == "loaded":
         await registry.apply_settings(plugin.name, applied)
     else:
@@ -453,13 +456,12 @@ def _summary(manifest: PluginManifest) -> PluginManifestSummary:
         version=manifest.version,
         description=manifest.description,
         plugin_api=manifest.plugin_api,
-        supported_here=manifest.plugin_api <= PLUGIN_API_VERSION,
         modes=list(manifest.modes),
         homepage=manifest.homepage,
         getting_started=manifest.getting_started,
         contributes=list(manifest.contributes),
         config_keys=list(manifest.config_keys),
-        needs_newer_gateway=manifest.needs_newer_gateway(__version__),
+        needs_newer_gateway=manifest.needs_newer_gateway(__version__, plugin_api=PLUGIN_API_VERSION),
         settings=_setting_fields(manifest),
         pages=[page.label for page in manifest.pages],
     )

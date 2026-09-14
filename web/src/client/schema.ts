@@ -9669,11 +9669,6 @@ export interface components {
             plugin_api: number;
             /** Settings */
             settings?: components["schemas"]["PluginSettingField"][];
-            /**
-             * Supported Here
-             * @description Whether this gateway provides that plugin API version.
-             */
-            supported_here: boolean;
             /** Version */
             version: string;
         };

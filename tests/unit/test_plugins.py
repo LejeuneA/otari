@@ -764,7 +764,7 @@ def test_manifest_keys_from_a_newer_gateway_are_ignored() -> None:
     )
 
     assert manifest.name == "ok"
-    assert manifest.ui is not None and manifest.ui.label == "x"
+    assert [page.label for page in manifest.pages] == ["x"]
 
 
 def test_min_otari_version_and_unknown_kinds_refuse_the_load_before_the_import(tmp_path: Path) -> None:

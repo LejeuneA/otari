@@ -816,7 +816,7 @@ export function pluginManifest(
     getting_started:
       "https://github.com/example/otari-request-log#getting-started",
     plugin_api: 1,
-    supported_here: true,
+    needs_newer_gateway: null,
     modes: ["standalone", "hosted", "hybrid"],
     contributes: ["routes", "traffic"],
     config_keys: ["request_log.path"],

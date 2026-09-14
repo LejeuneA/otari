@@ -9,7 +9,9 @@ monitor, fail-open or fail-closed, the mandate merge, and the result header.
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
-GuardrailDirection = Literal["input", "output"]
+# Only the input direction runs today; a backend is asked about the user's text
+# before dispatch. An output check is a later phase, and will widen this then.
+GuardrailDirection = Literal["input"]
 
 
 @dataclass(frozen=True)

@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import json
 import re
 import time
@@ -398,11 +399,7 @@ _UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument '([^']+)'")
 # either: the two definitions of "settable by a caller" are one definition, and
 # spelling it twice is how they drift.
 _FORWARDED_PARAMS: frozenset[str] = frozenset(
-    (
-        set(CompletionParams.model_fields)
-        | set(MessagesParams.model_fields)
-        | set(ResponsesParams.model_fields)
-    )
+    (set(CompletionParams.model_fields) | set(MessagesParams.model_fields) | set(ResponsesParams.model_fields))
     - SENSITIVE_PARAM_FIELDS
 )
 
@@ -2110,14 +2107,16 @@ class ToolContext:
         max_tool_iterations: int,
         tools_header: str | None,
         config: GatewayConfig,
-        plugin_tool: tuple[str, Callable[[], Any]] | None = None,
+        plugin_tool: tuple[str, Callable[..., Any]] | None = None,
+        plugin_tool_caller: Caller | None = None,
         injected_system: str = "",
     ) -> None:
         self.config = config
         self.mcp_server_configs = mcp_server_configs
-        # A plugin's tool backend the request opted into, as (name, factory), and
-        # the system text plugin traffic observers asked to prepend.
+        # A plugin's tool backend the request opted into, as (name, factory), who
+        # is asking, and the system text plugin traffic observers asked to prepend.
         self.plugin_tool = plugin_tool
+        self.plugin_tool_caller = plugin_tool_caller
         self.injected_system = injected_system
         self.use_sandbox = use_sandbox
         self.sandbox_tool_entry = sandbox_tool_entry
@@ -2239,7 +2238,20 @@ class ToolContext:
         """The one place a plugin's tool backend is constructed for this request."""
         assert self.plugin_tool is not None  # guaranteed by the plugin tool opt-in
         name, factory = self.plugin_tool
-        return PluginToolSession(name, factory())
+        return PluginToolSession(name, _call_tool_factory(factory, self.plugin_tool_caller))
+
+
+def _call_tool_factory(factory: Callable[..., Any], caller: Caller | None) -> Any:
+    """Hand the factory the caller when it takes one argument; call it bare otherwise."""
+    try:
+        parameters = list(inspect.signature(factory).parameters.values())
+    except (TypeError, ValueError):
+        return factory()
+    takes_one = any(
+        parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD, parameter.VAR_POSITIONAL)
+        for parameter in parameters
+    )
+    return factory(caller) if takes_one else factory()
 
 
 class PluginToolSession:
@@ -2287,18 +2299,23 @@ PLUGIN_TOOL_TYPE = "plugin"
 
 def _extract_plugin_tool(
     tools: list[dict[str, Any]] | None,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None]:
-    """Split a ``{"type": "plugin", "name": "<plugin>:<tool>"}`` entry from the caller's tools."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+    """Split the ``{"type": "plugin", "name": "<plugin>:<tool>"}`` entries from the caller's tools.
+
+    Every such entry is taken out, so none reaches the provider as a tool type
+    it does not know; the caller refuses more than one.
+    """
     if not tools:
-        return None, tools
-    entry = next((tool for tool in tools if isinstance(tool, dict) and tool.get("type") == PLUGIN_TOOL_TYPE), None)
-    if entry is None:
-        return None, tools
-    return entry, [tool for tool in tools if tool is not entry]
+        return [], tools
+    entries = [tool for tool in tools if isinstance(tool, dict) and tool.get("type") == PLUGIN_TOOL_TYPE]
+    if not entries:
+        return [], tools
+    return entries, [tool for tool in tools if tool not in entries]
 
 
 PLUGIN_TOOL_UNKNOWN_DETAIL = "No loaded plugin offers the tool named in the plugin tool entry."
 PLUGIN_TOOL_CONFLICT_DETAIL = "A plugin tool cannot be combined with MCP servers, code execution, or web search."
+PLUGIN_TOOL_ONE_DETAIL = "A request may name one plugin tool."
 
 
 async def _validate_mcp_server_urls(
@@ -2570,6 +2587,16 @@ def _with_injected_system(
     return inject_system_text(_api_of(adapter), kwargs, tool_ctx.injected_system)
 
 
+def _caller_of(ctx: RequestContext) -> Caller:
+    """Who sent the request, in the shape the plugin seam shows a plugin."""
+    return Caller(
+        api_key_id=ctx.api_key_id,
+        user_id=ctx.user_id,
+        workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
+        organization_id=str(ctx.organization_id) if ctx.organization_id else None,
+    )
+
+
 async def _observe_request(ctx: RequestContext, conversation: Conversation | None) -> None:
     """Hand the request to the plugin traffic observers, if any, and keep their hooks on the context.
 
@@ -2581,13 +2608,7 @@ async def _observe_request(ctx: RequestContext, conversation: Conversation | Non
     observers = _traffic_observers(ctx)
     if observers is None:
         return
-    caller = Caller(
-        api_key_id=ctx.api_key_id,
-        user_id=ctx.user_id,
-        workspace_id=str(ctx.workspace_id) if ctx.workspace_id else None,
-        organization_id=str(ctx.organization_id) if ctx.organization_id else None,
-    )
-    ctx.traffic = TrafficHooks(observers, caller, conversation)
+    ctx.traffic = TrafficHooks(observers, _caller_of(ctx), conversation)
     try:
         await ctx.traffic.request()
     except Exception:  # noqa: BLE001 the seam's promise: a plugin cannot fail a request
@@ -2665,9 +2686,7 @@ async def prepare_gateway_tools(
             await _validate_mcp_server_urls(adapter, mcp_servers)
         if mcp_server_ids:
             stored_servers = await _resolve_mcp_server_ids(adapter, ctx, mcp_server_ids)
-            await _validate_mcp_server_urls(
-                adapter, stored_servers, stored=True, workspace_id=ctx.workspace_id
-            )
+            await _validate_mcp_server_urls(adapter, stored_servers, stored=True, workspace_id=ctx.workspace_id)
             stored_name_counts = Counter(server.name for server in stored_servers)
             # Standalone cannot reach this: `uq_workspace_mcp_servers_workspace_name`
             # makes stored names unique per workspace and `resolve_workspace_mcp_servers`
@@ -2823,9 +2842,12 @@ async def prepare_gateway_tools(
         # served into a 400. So with no backend configured, or the toggle off, a
         # provider-named keyword passes through exactly as it always has.
         intercept_web_search = _web_search_intercept_enabled(ctx.config) and ctx.config.web_search_configured()
-        plugin_tool_entry, tools_after_plugin = _extract_plugin_tool(tools_after_sandbox)
-        plugin_tool: tuple[str, Callable[[], Any]] | None = None
-        if plugin_tool_entry is not None:
+        plugin_tool_entries, tools_after_plugin = _extract_plugin_tool(tools_after_sandbox)
+        plugin_tool: tuple[str, Callable[..., Any]] | None = None
+        if len(plugin_tool_entries) > 1:
+            raise adapter.error(400, PLUGIN_TOOL_ONE_DETAIL, ErrorKind.INVALID_REQUEST)
+        if plugin_tool_entries:
+            plugin_tool_entry = plugin_tool_entries[0]
             registry = getattr(ctx.request_app_state, "plugins", None) if ctx.request_app_state is not None else None
             offered = registry.tool_backends() if registry is not None else {}
             tool_name = str(plugin_tool_entry.get("name") or "")
@@ -2998,6 +3020,7 @@ async def prepare_gateway_tools(
         web_search_auth_token=web_search_auth_token,
         remaining_user_tools=remaining_user_tools,
         plugin_tool=plugin_tool,
+        plugin_tool_caller=_caller_of(ctx) if plugin_tool is not None else None,
         injected_system=ctx.traffic.injected_system if ctx.traffic is not None else "",
         max_tool_iterations=min(
             max_tool_iterations or DEFAULT_MAX_TOOL_ITERATIONS,
@@ -4638,8 +4661,26 @@ async def run_platform_non_stream(
         await _flush_pending_usage_reports(config, pending_error_reports, route.request_id, session_label)
         raise
 
+    response_block: str | None = None
     if traffic is not None:
-        await traffic.result(_api_of(adapter), result)
+        result, response_block = await traffic.result(_api_of(adapter), result)
+    if response_block is not None:
+        # The platform still gets the attempt's usage: the provider was called.
+        if successful_report is not None:
+            attempt, usage = successful_report
+            await _await_usage_report(
+                _report_platform_usage(
+                    config=config,
+                    correlation_id=attempt.attempt_id,
+                    outcome="success",
+                    usage=usage,
+                    session_label=session_label,
+                    is_final_attempt=True,
+                ),
+                attempt.attempt_id,
+                config,
+            )
+        raise adapter.error(403, response_block, ErrorKind.PERMISSION)
     if successful_report is None:
         return result
     attempt, usage = successful_report

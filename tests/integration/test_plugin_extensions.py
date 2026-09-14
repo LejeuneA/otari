@@ -95,6 +95,9 @@ class Echo:
     def owns_tool(self, name):
         return name == "echo"
 
+    def __init__(self, caller):
+        STATE["tool_caller"] = caller
+
     async def call_tool(self, name, arguments):
         return "echo:" + str(arguments.get("text"))
 
@@ -107,6 +110,9 @@ def register(ctx: PluginContext) -> None:
     ctx.add_traffic_observer(Enforcer())
     ctx.add_guardrail("pii", Guard())
     ctx.add_tool("echo", Echo)
+    ctx.validate_settings(
+        lambda values: "banned cannot be everything" if values.get("banned") == "everything" else None
+    )
     ctx.subscribe("usage.logged", lambda event: STATE["events"].append(event.payload))
     ctx.subscribe("plugin.settings_changed", lambda event: STATE["events"].append(event.payload))
     ctx.on_startup(lambda: STATE.__setitem__("started", True))
@@ -256,6 +262,13 @@ def test_settings_are_read_changed_and_applied_live(ext_client: TestClient) -> N
     assert response.status_code == 422
     response = ext_client.put(f"{API_ROOT}/plugins/ext/settings", json={"values": {"nope": 3}}, headers=HEADERS)
     assert response.status_code == 422
+    # The plugin's own validator sees the values as they would apply, before the write.
+    response = ext_client.put(
+        f"{API_ROOT}/plugins/ext/settings", json={"values": {"banned": "everything"}}, headers=HEADERS
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "banned cannot be everything"
+    assert _state()["config"]["banned"] == "force"
 
 
 def test_a_plugin_blocks_a_request_before_the_provider(ext_client: TestClient) -> None:
@@ -340,9 +353,14 @@ def test_a_plugin_tool_runs_in_the_gateway_tool_loop(ext_client: TestClient) -> 
     names = {tool.get("function", {}).get("name") or tool.get("name") for tool in calls[0]["tools"]}
     assert "echo" in names
     assert any(m.get("role") == "tool" and "echo:hi" in str(m.get("content")) for m in calls[1]["messages"])
+    # The factory took an argument, so it was handed who sent the request.
+    assert _state()["tool_caller"].user_id == "test-user"
+    assert _state()["tool_caller"].api_key_id is None  # the master key
 
     unknown = _chat(ext_client, "x", tools=[{"type": "plugin", "name": "ext:nope"}])
     assert unknown.status_code == 400
+    two = _chat(ext_client, "x", tools=[{"type": "plugin", "name": "ext:echo"}, {"type": "plugin", "name": "ext:echo"}])
+    assert two.status_code == 400 and "one plugin tool" in two.text
 
 
 def test_usage_events_reach_a_subscribed_plugin(ext_client: TestClient) -> None:

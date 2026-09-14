@@ -133,7 +133,7 @@ function ManifestBlock({
   // Reported once the manifest is known, so the confirm is held only for a
   // plugin this gateway cannot load; an unreadable manifest holds nothing.
   const [reported, setReported] = useState<boolean>()
-  const supported = manifest?.supported_here
+  const supported = manifest ? manifest.needs_newer_gateway === null : undefined
   if (supported !== undefined && supported !== reported) {
     setReported(supported)
     onSupported(supported)
@@ -169,12 +169,6 @@ function ManifestSummary({ manifest }: { manifest: PluginManifestSummary }) {
           This gateway will not load it: {manifest.needs_newer_gateway}.
         </p>
       ) : null}
-      {manifest.supported_here ? null : (
-        <p className="text-danger">
-          Needs plugin API {manifest.plugin_api}; this gateway provides an older
-          one, so it would not load. Update the gateway first.
-        </p>
-      )}
       <p className="text-emphasis">What it adds</p>
       {manifest.contributes.length > 0 ? (
         <ul className="list-disc flex flex-col gap-1 pl-5">

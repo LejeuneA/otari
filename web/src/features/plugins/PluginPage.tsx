@@ -8,7 +8,7 @@ import { EmptyState } from "@/design-system/feedback/EmptyState"
 import { ErrorBanner } from "@/design-system/feedback/ErrorBanner"
 import { PageLoading } from "@/design-system/feedback/PageLoading"
 import { PageIntro } from "@/design-system/layout/PageIntro"
-import { usePlugins } from "@/shared/api/plugins"
+import { usePluginPages, usePlugins } from "@/shared/api/plugins"
 
 /** What the frame may ask of the dashboard, and what the dashboard tells it. */
 type BridgeMessage =
@@ -69,7 +69,12 @@ export function PluginPage() {
   // read would need the route's own api.
   const { name, page: pageId } = useParams({ strict: false })
   const navigate = useNavigate()
+  // Two reads. The pages route answers every signed-in session with the pages
+  // that caller may see, so it is what resolves a member's page; the operator
+  // list is refused to a member and is read only to say why a plugin has no
+  // page to frame (failed, disabled, installed since the last start).
   const plugins = usePlugins()
+  const pluginPages = usePluginPages()
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [notice, setNotice] = useState<Notice>()
 
@@ -78,8 +83,13 @@ export function PluginPage() {
   // page it frames rather than on mount.
   const plugin = plugins.data?.plugins.find((one) => one.name === name)
   const pages = plugin?.pages ?? []
+  const targetPath =
+    pageId === undefined ? `/plugins/${name}` : `/plugins/${name}/${pageId}`
   const page: PluginPageInfo | undefined =
-    pageId === undefined ? pages[0] : pages.find((one) => one.id === pageId)
+    (pageId === undefined
+      ? pages[0]
+      : pages.find((one) => one.id === pageId)) ??
+    (pluginPages.data?.pages ?? []).find((one) => one.path === targetPath)
   const frameUrl = page?.url
 
   useEffect(() => {
@@ -127,16 +137,21 @@ export function PluginPage() {
     }
   }, [frameUrl, navigate])
 
-  if (plugins.isPending && !plugins.data) {
+  const stillReading =
+    (plugins.isPending && !plugins.data) ||
+    (pluginPages.isPending && !pluginPages.data)
+  if (page === undefined && stillReading) {
     return <PageLoading label="Reading installed plugins…" />
   }
-  if (plugins.isError && !plugins.data) {
+  // The list's refusal is shown only when the pages route found nothing
+  // either: a member on an operator page, or a plugin that is not there.
+  if (page === undefined && plugins.isError && !plugins.data) {
     return <ErrorBanner error={plugins.error} />
   }
 
   const openMarketplace = () => void navigate({ to: "/marketplace" })
 
-  if (!plugin) {
+  if (page === undefined && !plugin) {
     return (
       <EmptyState
         title={`No plugin named ${name ?? ""}`}
@@ -146,7 +161,7 @@ export function PluginPage() {
       />
     )
   }
-  if (plugin.status === "failed") {
+  if (plugin?.status === "failed") {
     return (
       <EmptyState
         title={`${plugin.name} did not load`}
@@ -162,7 +177,7 @@ export function PluginPage() {
       </EmptyState>
     )
   }
-  if (plugin.status !== "loaded") {
+  if (plugin !== undefined && plugin.status !== "loaded") {
     return (
       <EmptyState
         title={`${plugin.name} is not loaded`}
@@ -176,13 +191,13 @@ export function PluginPage() {
       />
     )
   }
-  if (!page) {
+  if (page === undefined) {
     return (
       <EmptyState
         title={
           pageId === undefined
-            ? `${plugin.name} has no page`
-            : `${plugin.name} has no page named ${pageId}`
+            ? `${name} has no page`
+            : `${name} has no page named ${pageId}`
         }
         description={
           pageId === undefined

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -122,12 +123,24 @@ section = "none"
         "plugin_api = 0",
         '[plugin.settings.Bad-Key]\ntype = "int"',
         '[plugin.settings.timeout]\ntype = "int"\ndefault = "ten"',
-        'contributes = ["telepathy"]',
+        '[plugin.settings.token]\ntype = "int"\nsecret = true',
+        'contributes = ["Not A Kind"]',
     ],
 )
 def test_manifest_refuses_bad_declarations(extra: str) -> None:
     with pytest.raises(PluginManifestError):
         parse_manifest(_manifest(extra))
+
+
+def test_a_manifest_for_a_newer_plugin_api_or_gateway_parses_and_names_what_it_needs() -> None:
+    newer_api = parse_manifest(_manifest(f"plugin_api = {PLUGIN_API_VERSION + 1}"))
+    assert newer_api.needs_newer_gateway("1.0.0") == (
+        f"needs plugin API {PLUGIN_API_VERSION + 1}; this gateway provides {PLUGIN_API_VERSION}"
+    )
+    newer_kind = parse_manifest(_manifest('contributes = ["telepathy"]'))
+    assert newer_kind.unsupported_contributions == ["telepathy"]
+    assert "telepathy" in (newer_kind.needs_newer_gateway("1.0.0") or "")
+    assert parse_manifest(_manifest()).needs_newer_gateway("1.0.0") is None
 
 
 def test_manifest_settings_are_typed_and_default() -> None:
@@ -164,6 +177,16 @@ def test_plugin_config_layers_defaults_under_the_block_and_checks_types() -> Non
 
 
 # --- loading ---------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _forget_probe_packages() -> Generator[None]:
+    """Keep one test's imported plugin package, and its sys.path entry, from serving the next."""
+    path_before = list(sys.path)
+    yield
+    sys.path[:] = path_before
+    for name in [module for module in sys.modules if module.startswith("probe_plugin")]:
+        del sys.modules[name]
 
 
 def _install(directory: Path, manifest: str, package: str, *, package_name: str = "probe_plugin") -> None:
@@ -245,7 +268,8 @@ async def test_a_plugin_registers_every_new_kind_of_contribution(tmp_path: Path)
     _install(tmp_path, FULL_MANIFEST, FULL_PACKAGE)
     registry = load_plugins(_config(tmp_path, probe={"timeout": 5}))
     plugin = registry.get("probe")
-    assert plugin is not None and plugin.status == "loaded", plugin.error
+    assert plugin is not None
+    assert plugin.status == "loaded", plugin.error
 
     assert list(registry.guardrail_backends()) == ["probe:secrets"]
     assert list(registry.tool_backends()) == ["probe:echo"]
@@ -341,12 +365,117 @@ def register(ctx):
     ctx.add_health_check(lambda: True)
 """
     _install(tmp_path, _manifest('contributes = ["lifecycle"]'), package)
-    registry = load_plugins(_config(tmp_path))
 
-    report, critical = await registry.check_health()
+    # The plugin asked to be critical; without the operator's grant it is reported and no more.
+    report, critical = await load_plugins(_config(tmp_path)).check_health()
+    assert critical is False
+    assert report["probe"].startswith("failing: ConnectionError: queue unreachable")
 
+    report, critical = await load_plugins(_config(tmp_path, health_critical=["probe"])).check_health()
     assert critical is True
     assert report["probe"].startswith("failing: ConnectionError: queue unreachable")
+
+
+def test_a_plugin_for_a_retired_plugin_api_or_a_newer_one_is_refused_before_import(tmp_path: Path) -> None:
+    from gateway.plugins import registry as registry_module
+
+    _install(tmp_path, _manifest(f"plugin_api = {PLUGIN_API_VERSION + 1}"), "raise RuntimeError('imported')\n")
+    plugin = load_plugins(_config(tmp_path)).get("probe")
+    assert plugin is not None
+    assert plugin.status == "failed"
+    assert f"needs plugin API {PLUGIN_API_VERSION + 1}" in (plugin.error or "")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(registry_module, "PLUGIN_API_MIN_VERSION", PLUGIN_API_VERSION + 1)
+        _install(
+            tmp_path / "again", _manifest(f"plugin_api = {PLUGIN_API_VERSION}"), "raise RuntimeError('imported')\n"
+        )
+        plugin = load_plugins(_config(tmp_path / "again")).get("probe")
+    assert plugin is not None
+    assert plugin.status == "failed"
+    assert "no longer provides" in (plugin.error or "")
+
+
+def test_a_directory_plugin_loads_its_own_code_even_when_the_name_is_shadowed(tmp_path: Path) -> None:
+    # A distribution of the same name earlier on sys.path would stand in for
+    # the plugin's own code under a plain import; a directory plugin is loaded
+    # from its own directory instead.
+    elsewhere = tmp_path / "elsewhere" / "probe_plugin"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "__init__.py").write_text("def register(ctx):\n    raise RuntimeError('the wrong tree')\n")
+    sys.path.insert(0, str(elsewhere.parent))
+    _install(tmp_path, _manifest(), "def register(ctx):\n    pass\n")
+
+    plugin = load_plugins(_config(tmp_path)).get("probe")
+
+    assert plugin is not None
+    assert plugin.status == "loaded", plugin.error
+    assert Path(sys.modules["probe_plugin"].__file__ or "").parent == tmp_path / "probe" / "probe_plugin"
+
+
+def test_the_context_carries_the_runtime_mode_and_a_named_logger(tmp_path: Path) -> None:
+    package = """
+SEEN = {}
+
+
+def register(ctx):
+    SEEN["mode"] = ctx.mode
+    SEEN["logger"] = ctx.log.name
+"""
+    _install(tmp_path, _manifest('modes = ["standalone", "hybrid"]'), package)
+    plugin = load_plugins(_config(tmp_path)).get("probe")
+    assert plugin is not None
+    assert plugin.status == "loaded", plugin.error
+
+    seen = sys.modules["probe_plugin"].SEEN
+    assert seen == {"mode": "standalone", "logger": "gateway.plugins.probe"}
+
+
+@pytest.mark.asyncio
+async def test_a_settings_validator_refuses_a_write_before_it_is_persisted(tmp_path: Path) -> None:
+    package = """
+def register(ctx):
+    def check(values):
+        if values.get("low", 0) > values.get("high", 0):
+            raise ValueError("low must not exceed high")
+        if values.get("high") == 13:
+            return "thirteen is unlucky"
+
+    ctx.validate_settings(check)
+"""
+    manifest = _manifest(
+        '[plugin.settings.low]\ntype = "int"\ndefault = 1\n[plugin.settings.high]\ntype = "int"\ndefault = 9'
+    )
+    _install(tmp_path, manifest, package)
+    registry = load_plugins(_config(tmp_path))
+    plugin = registry.get("probe")
+    assert plugin is not None
+    assert plugin.status == "loaded", plugin.error
+
+    assert await registry.validate_settings("probe", {"low": 2, "high": 5}) is None
+    assert await registry.validate_settings("probe", {"low": 7, "high": 5}) == "low must not exceed high"
+    assert await registry.validate_settings("probe", {"low": 1, "high": 13}) == "thirteen is unlucky"
+    # A plugin without a validator accepts everything the manifest accepted.
+    assert await registry.validate_settings("nowhere", {"x": 1}) is None
+
+
+def test_a_tool_factory_is_handed_the_caller_when_it_takes_one() -> None:
+    from gateway.api.routes._pipeline import _call_tool_factory
+
+    caller = Caller(api_key_id="k", user_id="u", workspace_id=None, organization_id=None)
+
+    class Bare:
+        pass
+
+    class ForCaller:
+        def __init__(self, who: Caller) -> None:
+            self.who = who
+
+    assert isinstance(_call_tool_factory(Bare, caller), Bare)
+    assert _call_tool_factory(ForCaller, caller).who is caller
+    assert _call_tool_factory(lambda: "bare", caller) == "bare"
+    assert _call_tool_factory(lambda who: who.api_key_id, caller) == "k"
+    assert _call_tool_factory(lambda *args: args, caller) == (caller,)
 
 
 # --- events ----------------------------------------------------------------------
@@ -384,6 +513,27 @@ async def test_the_bus_runs_handlers_off_the_emitter_and_fences_them() -> None:
 
 def test_emit_without_a_bound_bus_is_a_no_op() -> None:
     assert emit("usage.logged") == 0
+
+
+@pytest.mark.asyncio
+async def test_the_bus_drops_events_past_its_in_flight_cap() -> None:
+    from gateway.plugins import events as events_module
+
+    release = asyncio.Event()
+
+    async def wait(event: Any) -> None:
+        await release.wait()
+
+    bus = EventBus([("p", "*", wait)])
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(events_module, "MAX_IN_FLIGHT", 3)
+        scheduled = [bus.emit("usage.logged", n=n) for n in range(5)]
+    assert scheduled == [1, 1, 1, 0, 0]
+
+    release.set()
+    await bus.drain()
+    assert bus.emit("usage.logged", n=6) == 1
+    await bus.drain()
 
 
 # --- guardrail backends ------------------------------------------------------------
@@ -793,6 +943,39 @@ def register(ctx):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_health_calls_share_one_run(tmp_path: Path) -> None:
+    package = """
+import asyncio
+
+CALLS = {"n": 0}
+
+
+def register(ctx):
+    async def slow():
+        CALLS["n"] += 1
+        await asyncio.sleep(0.05)
+        return True
+
+    ctx.add_health_check(slow)
+"""
+    _install(tmp_path, _manifest('contributes = ["lifecycle"]'), package)
+    registry = load_plugins(_config(tmp_path))
+
+    # Fifty unauthenticated callers at once, as a scraper of /health would be.
+    reports = await asyncio.gather(*(registry.check_health() for _ in range(50)))
+
+    assert all(report == ({"probe": "ok"}, False) for report in reports)
+    assert sys.modules["probe_plugin"].CALLS["n"] == 1
+
+
+def test_the_health_routes_publish_a_word_and_not_the_exception() -> None:
+    from gateway.api.routes.health import public_plugin_status
+
+    assert public_plugin_status("ok") == "ok"
+    assert public_plugin_status("failing: ConnectError: postgresql://user:hunter2@db/x") == "failing"
+
+
+@pytest.mark.asyncio
 async def test_secret_settings_are_encrypted_at_rest(monkeypatch: pytest.MonkeyPatch) -> None:
     from gateway.services.plugin_settings_service import ENCRYPTED_KEY, load_plugin_settings, save_plugin_settings
     from gateway.services.secret_box import generate_secret_key
@@ -826,3 +1009,55 @@ async def test_secret_settings_are_encrypted_at_rest(monkeypatch: pytest.MonkeyP
     assert stored["timeout"] == 3
     assert ENCRYPTED_KEY in stored["token"] and "hunter2" not in json.dumps(stored["token"])
     assert await load_plugin_settings(_Session(), "probe", manifest) == {"token": "hunter2", "timeout": 3}  # type: ignore[arg-type]
+
+
+# --- the harness and the caller dependency ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_testing_harness_loads_a_plugin_and_drives_its_observers(tmp_path: Path) -> None:
+    from gateway.plugins.testing import chat, load_plugin, observe
+
+    package = """
+from gateway.plugins.api import PluginContext, RequestDecision, ToolCallDecision
+
+
+class Gate:
+    def on_request(self, event):
+        names = [tool.name for tool in event.conversation.tools]
+        return RequestDecision(inject_system="Be careful.", annotations={"tools": names})
+
+    def on_tool_call(self, event):
+        return ToolCallDecision(deny="Never force-push." if "--force" in str(event.tool_call.arguments) else None)
+
+
+def register(ctx: PluginContext) -> None:
+    ctx.add_traffic_observer(Gate())
+"""
+    _install(tmp_path, _manifest('contributes = ["traffic"]'), package)
+
+    plugin = load_plugin(tmp_path / "probe", settings={"strict": True})
+    assert plugin.status == "loaded", plugin.error
+    assert plugin.config == {"strict": True}
+
+    tools = [{"type": "function", "function": {"name": "Bash", "parameters": {}}}]
+    hooks = await observe(plugin, chat([{"role": "user", "content": "push it"}], tools=tools))
+    assert hooks.injected_system == "Be careful."
+    assert hooks.annotations == {"probe": {"tools": ["Bash"], "injected_system": True}}
+    assert await hooks.tool_call(ToolCall("c1", "Bash", {"command": "git push --force"})) == "Never force-push."
+    assert await hooks.tool_call(ToolCall("c2", "Bash", {"command": "git status"})) is None
+
+
+@pytest.mark.asyncio
+async def test_get_caller_reduces_a_key_to_ids_and_the_master_key_to_none() -> None:
+    from types import SimpleNamespace
+
+    from gateway.plugins.api import get_caller
+
+    key = SimpleNamespace(id="key-1", user_id="u-1", workspace_id="ws-1")
+    assert await get_caller((key, False)) == Caller(  # type: ignore[arg-type]
+        api_key_id="key-1", user_id="u-1", workspace_id="ws-1", organization_id=None
+    )
+    assert await get_caller((None, True)) == Caller(
+        api_key_id=None, user_id=None, workspace_id=None, organization_id=None
+    )

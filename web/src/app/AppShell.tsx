@@ -456,9 +456,9 @@ function AppShellChrome() {
   const isVisible = useNavVisibility()
   const recordNavigation = useRecordNavigation()
   const { pathname } = useLocation()
-  // The rows the registry cannot declare, appended to the Extend section
-  // below its Marketplace row. Read here rather than inside the map because
-  // it is a hook, and gated by the hook itself on the same axes as that row.
+  // The rows the registry cannot declare, placed where each plugin's manifest
+  // says: at the end of a section, or nested under Tools or Routing. Read here
+  // rather than inside the map because it is a hook.
   const pluginPages = usePluginPages()
   useDocumentTitle(
     navLabelForPath(pathname) ??
@@ -584,11 +584,6 @@ function AppShellChrome() {
     showOrganizationRail ? ORG_NAV_SECTIONS : NAV_SECTIONS,
     isVisible,
   )
-  // The rows the registry cannot declare, placed where each plugin's manifest
-  // says: at the end of a section, or nested under Tools or Routing. Read here
-  // rather than inside the map because it is a hook.
-  const pluginPages = usePluginPages()
-
   // Track the mobile breakpoint so the sidebar can render as an off-canvas
   // drawer below it and as the fixed-width rail above it. Closing the drawer when
   // the viewport grows past the breakpoint keeps a stale open state from leaving

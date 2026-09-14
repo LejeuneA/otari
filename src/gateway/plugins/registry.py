@@ -12,6 +12,7 @@ take the gateway down with it; the dashboard shows the failure.
 
 import asyncio
 import importlib
+import importlib.util
 import inspect
 import sys
 import time
@@ -26,6 +27,7 @@ from fastapi import APIRouter
 
 from gateway.log_config import logger
 from gateway.models.plugins import (
+    PLUGIN_API_MIN_VERSION,
     PLUGIN_API_VERSION,
     PLUGIN_NAME_PATTERN,
     PluginManifest,
@@ -35,7 +37,7 @@ from gateway.models.plugins import (
     setting_value_matches,
 )
 from gateway.plugins.discovery import DiscoveredPlugin, DiscoveryProblem, PluginSource, discover_plugins
-from gateway.plugins.events import EventBus, Handler
+from gateway.plugins.events import EVENT_NAMES, EventBus, Handler
 from gateway.plugins.guardrails import GuardrailBackend, profile_name
 from gateway.services.routing.backends import set_plugin_router_backends
 from gateway.version import __version__
@@ -47,7 +49,8 @@ if TYPE_CHECKING:
 PluginStatus = Literal["loaded", "failed", "disabled", "pending_restart"]
 Hook = Callable[[], Any]
 SettingsListener = Callable[[dict[str, Any]], Any]
-ToolBackendFactory = Callable[[], Any]
+ToolBackendFactory = Callable[..., Any]
+SettingsValidator = Callable[[dict[str, Any]], Any]
 
 
 class PluginError(Exception):
@@ -115,6 +118,7 @@ class LoadedPlugin:
     tools: dict[str, ToolBackendFactory] = field(default_factory=dict)
     router_backends: dict[str, Any] = field(default_factory=dict)
     settings_listeners: list[SettingsListener] = field(default_factory=list)
+    settings_validator: SettingsValidator | None = None
     health: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -156,6 +160,7 @@ class LoadedPlugin:
         self.tools.clear()
         self.router_backends.clear()
         self.settings_listeners.clear()
+        self.settings_validator = None
 
 
 class PluginContext:
@@ -166,13 +171,24 @@ class PluginContext:
     updates it in place and calls every ``on_settings_change`` listener.
     ``container`` is the composition root, so a plugin can resolve a port; it is
     ``None`` when plugins are loaded for the CLI alone, where no app exists.
+    ``mode`` is the runtime the gateway is in, for a plugin that behaves
+    differently in hybrid mode. ``log`` is the plugin's own logger, a child of
+    the gateway's, so its lines carry the plugin's name.
     """
 
-    def __init__(self, plugin: LoadedPlugin, config: dict[str, Any], container: "Container | None") -> None:
+    def __init__(
+        self,
+        plugin: LoadedPlugin,
+        config: dict[str, Any],
+        container: "Container | None",
+        mode: RuntimeMode = "standalone",
+    ) -> None:
         self._plugin = plugin
         self.name = plugin.name
         self.config = config
         self.container = container
+        self.mode: RuntimeMode = mode
+        self.log = logger.getChild(f"plugins.{plugin.name}")
 
     def add_router(self, router: APIRouter, *, auth: RouterAuth = "operator") -> None:
         """Mount ``router`` under ``/api/v1/plugins/<name>``, behind ``auth``.
@@ -245,6 +261,10 @@ class PluginContext:
         if not isinstance(event, str) or not event:
             msg = f"plugin {self.name!r} subscribed to an event with no name"
             raise PluginError(msg)
+        if event != "*" and event not in EVENT_NAMES:
+            # Not refused: a plugin written for a newer gateway may name an event
+            # this one does not emit yet. Said once, so a typo is not a silent handler.
+            logger.warning("Plugin %s subscribed to %r, which this gateway never emits", self.name, event)
         self._plugin.subscriptions.append((event, _callable(self, handler, "event handler")))
 
     def add_guardrail(self, name: str, backend: GuardrailBackend) -> None:
@@ -261,7 +281,10 @@ class PluginContext:
         ``factory`` is called per request and returns an object with the
         ``ToolBackend`` members (``openai_tools``, ``owns_tool``, ``call_tool``,
         ``purpose_hints``); an async context manager is entered for the request.
-        A request opts in with a tool entry ``{"type": "plugin", "name": "<plugin>:<name>"}``.
+        A factory that takes an argument is handed the request's ``Caller``, so
+        a tool can act for the API key, user, and workspace that sent it; one
+        that takes none is called bare. A request opts in with a tool entry
+        ``{"type": "plugin", "name": "<plugin>:<name>"}``.
         """
         _valid_key(self, name, "tool")
         if not callable(factory):
@@ -280,6 +303,16 @@ class PluginContext:
     def on_settings_change(self, listener: SettingsListener) -> None:
         """Run ``listener(config)`` after the dashboard changes the plugin's settings."""
         self._plugin.settings_listeners.append(_callable(self, listener, "settings listener"))
+
+    def validate_settings(self, validator: SettingsValidator) -> None:
+        """Ask ``validator(values)`` before a dashboard write is persisted.
+
+        It sees the values as they would apply, and refuses the write by
+        raising ``ValueError`` (its message reaches the operator) or returning
+        a string; anything else accepts. The manifest's type check runs first,
+        so a validator sees values of the declared types.
+        """
+        self._plugin.settings_validator = _callable(self, validator, "settings validator")
 
 
 def _callable(ctx: PluginContext, value: Any, what: str) -> Any:
@@ -308,14 +341,17 @@ class PluginRegistry:
         hook_timeout_ms: int = 30_000,
         health_timeout_ms: int = 5_000,
         health_cache_seconds: float = 10.0,
+        health_critical: frozenset[str] = frozenset(),
     ) -> None:
         self.directory = directory
         self._plugins = plugins
         self.problems = problems
         self._hook_timeout = hook_timeout_ms / 1000
         self._health_timeout = health_timeout_ms / 1000
+        self._health_critical = health_critical
         self._health_cache_seconds = health_cache_seconds
         self._health_report: tuple[float, dict[str, str], bool] | None = None
+        self._health_lock = asyncio.Lock()
         self.events = EventBus(
             ((plugin.name, name, handler) for plugin in self.loaded() for name, handler in plugin.subscriptions),
             timeout_ms=event_timeout_ms,
@@ -403,7 +439,9 @@ class PluginRegistry:
                     raise RuntimeError("check returned a falsy value")  # noqa: TRY301
             except Exception as error:  # noqa: BLE001 a failing check is a report, not a crash
                 problems.append(f"{type(error).__name__}: {error}")
-                critical_failure = critical_failure or check.critical
+                # A plugin asks to be critical; the operator grants it in
+                # plugins.health_critical. Neither alone takes readiness down.
+                critical_failure = critical_failure or (check.critical and plugin.name in self._health_critical)
         status = "ok" if not problems else "failing: " + "; ".join(problems)
         plugin.health = {"status": status}
         return status, critical_failure
@@ -416,15 +454,34 @@ class PluginRegistry:
         health routes are unauthenticated, so a caller must not be able to fan
         the checks out as fast as it can send requests.
         """
-        now = time.monotonic()
-        if self._health_report is not None and now - self._health_report[0] < self._health_cache_seconds:
-            return self._health_report[1], self._health_report[2]
-        checked = [plugin for plugin in self.loaded() if plugin.health_checks]
-        outcomes = await asyncio.gather(*(self._check_plugin(plugin) for plugin in checked))
-        report = {plugin.name: status for plugin, (status, _) in zip(checked, outcomes, strict=True)}
-        critical_failure = any(critical for _, critical in outcomes)
-        self._health_report = (now, report, critical_failure)
-        return report, critical_failure
+        # Under a lock, so callers that arrive while a run is in flight wait for
+        # it and read the report it leaves, rather than each starting a run.
+        async with self._health_lock:
+            now = time.monotonic()
+            if self._health_report is not None and now - self._health_report[0] < self._health_cache_seconds:
+                return self._health_report[1], self._health_report[2]
+            checked = [plugin for plugin in self.loaded() if plugin.health_checks]
+            outcomes = await asyncio.gather(*(self._check_plugin(plugin) for plugin in checked))
+            report = {plugin.name: status for plugin, (status, _) in zip(checked, outcomes, strict=True)}
+            critical_failure = any(critical for _, critical in outcomes)
+            self._health_report = (now, report, critical_failure)
+            return report, critical_failure
+
+    async def validate_settings(self, name: str, values: dict[str, Any]) -> str | None:
+        """Ask a loaded plugin's validator about a dashboard write; return its refusal, if any."""
+        plugin = self.get(name)
+        if plugin is None or plugin.settings_validator is None:
+            return None
+        try:
+            outcome = plugin.settings_validator(values)
+            if inspect.isawaitable(outcome):
+                outcome = await asyncio.wait_for(outcome, timeout=self._hook_timeout)
+        except ValueError as error:
+            return str(error) or "refused by the plugin"
+        except Exception as error:  # noqa: BLE001 a broken validator refuses, never lets a write through
+            logger.exception("Plugin %s: settings validator raised", plugin.name)
+            return f"the plugin's validator failed: {type(error).__name__}"
+        return outcome if isinstance(outcome, str) and outcome else None
 
     async def apply_settings(self, name: str, values: dict[str, Any]) -> LoadedPlugin | None:
         """Update a loaded plugin's live config in place and tell its listeners."""
@@ -546,12 +603,46 @@ def _imported_from_elsewhere(manifest: PluginManifest, package_dir: Path) -> Pat
     return None if loaded_from == package_dir.resolve() else loaded_from
 
 
-def _resolve_register(manifest: PluginManifest, package_dir: Path) -> Callable[[PluginContext], None]:
+def _import_package(manifest: PluginManifest, package_dir: Path, *, from_directory: bool) -> Any:
+    """Import the plugin's package, from ``package_dir`` itself when the plugin is a directory.
+
+    A directory plugin is loaded by location rather than by name, so a
+    distribution of the same name, or another directory an earlier load put on
+    ``sys.path``, cannot stand in for its code. An entry-point plugin is an
+    installed distribution and imports the ordinary way.
+    """
     elsewhere = _imported_from_elsewhere(manifest, package_dir)
     if elsewhere is not None:
         msg = f"package {manifest.package!r} is already imported from {elsewhere}, not from {package_dir}"
         raise PluginError(msg)
-    module = importlib.import_module(manifest.package)
+    if not from_directory or "." in manifest.package:
+        module = importlib.import_module(manifest.package)
+    else:
+        init = package_dir / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            manifest.package, init, submodule_search_locations=[str(package_dir)]
+        )
+        if spec is None or spec.loader is None:
+            msg = f"package {manifest.package!r} has no importable __init__.py at {package_dir}"
+            raise PluginError(msg)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[manifest.package] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(manifest.package, None)
+            raise
+    origin = getattr(module, "__file__", None)
+    if origin and not Path(origin).resolve().is_relative_to(package_dir.resolve()):
+        msg = f"package {manifest.package!r} imported from {Path(origin).parent}, not from {package_dir}"
+        raise PluginError(msg)
+    return module
+
+
+def _resolve_register(
+    manifest: PluginManifest, package_dir: Path, *, from_directory: bool = True
+) -> Callable[[PluginContext], None]:
+    module = _import_package(manifest, package_dir, from_directory=from_directory)
     register = getattr(module, manifest.entrypoint, None)
     if register is None:
         msg = f"package {manifest.package!r} has no attribute {manifest.entrypoint!r}"
@@ -607,12 +698,15 @@ def _load_one(
         install_dir=discovered.install_dir,
         status="loaded",
     )
-    if manifest.plugin_api > PLUGIN_API_VERSION:
+    if manifest.plugin_api < PLUGIN_API_MIN_VERSION:
         plugin.status = "failed"
-        plugin.error = f"needs plugin API {manifest.plugin_api}; this gateway provides {PLUGIN_API_VERSION}"
+        plugin.error = (
+            f"written against plugin API {manifest.plugin_api}, which this gateway no longer provides "
+            f"(oldest: {PLUGIN_API_MIN_VERSION})"
+        )
         logger.error("Plugin %s: %s", manifest.name, plugin.error)
         return plugin
-    refusal = manifest.needs_newer_gateway(__version__)
+    refusal = manifest.needs_newer_gateway(__version__, plugin_api=PLUGIN_API_VERSION)
     if refusal is not None:
         # Refused before the import: the plugin said what it needs, and running
         # it here would fail somewhere less legible than this.
@@ -634,8 +728,10 @@ def _load_one(
             sys.path.append(entry)
     try:
         plugin.config = build_plugin_config(manifest, settings)
-        register = _resolve_register(manifest, discovered.package_dir)
-        outcome = register(PluginContext(plugin, plugin.config, container))
+        register = _resolve_register(
+            manifest, discovered.package_dir, from_directory=discovered.install_dir is not None
+        )
+        outcome = register(PluginContext(plugin, plugin.config, container, mode))
         if inspect.isawaitable(outcome):
             outcome.close()
             msg = f"{manifest.package}.{manifest.entrypoint} returned an awaitable; register must run when called"
@@ -716,6 +812,7 @@ def load_plugins(config: "GatewayConfig", container: "Container | None" = None) 
         event_timeout_ms=plugins_config.event_timeout_ms,
         hook_timeout_ms=plugins_config.hook_timeout_ms,
         health_timeout_ms=plugins_config.health_timeout_ms,
+        health_critical=frozenset(plugins_config.health_critical),
     )
     set_plugin_router_backends(registry.router_backends())
     logger.info("Plugins: %s", registry.summary)

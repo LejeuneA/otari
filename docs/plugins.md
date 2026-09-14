@@ -87,6 +87,7 @@ plugins:
   event_timeout_ms: 5000         # budget per event handler, off the request path
   hook_timeout_ms: 30000         # budget per startup or shutdown hook
   health_timeout_ms: 5000        # budget per health check when /health asks; the report is held ten seconds
+  health_critical: []            # plugins whose critical health checks may take /health/readiness to 503
   agent-gates:                   # a plugin's own settings, under its name
     judge_timeout_seconds: 120
 ```
@@ -171,7 +172,9 @@ Python in the gateway's process, and the dashboard says so before an install.
 `plugin_api` names the contract the plugin is written against. The gateway
 provides one version (`gateway.plugins.api.PLUGIN_API_VERSION`) and refuses a
 plugin that wants a newer one, so a plugin fails at install time with a clear
-reason rather than at runtime with an import error. `modes` keeps a plugin out
+reason rather than at runtime with an import error. When a version is retired
+the gateway also refuses one older than `PLUGIN_API_MIN_VERSION`, with the
+reason. `modes` keeps a plugin out
 of a runtime it was not written for: one that resolves provider credentials
 locally has nothing to do on a hybrid gateway, and is listed as disabled there.
 
@@ -193,10 +196,17 @@ install dialog shows.
 Import from `gateway.plugins.api` and nothing else under `gateway`. That module
 re-exports the whole plugin contract: `PluginContext`, the FastAPI dependencies
 a plugin's routes take (`get_db`, `get_config`, `require_deployment_operator`,
-`verify_api_key_or_master_key`, and the rest), the traffic events and
+`verify_api_key_or_master_key`, and the rest, plus `get_caller` for who is
+asking as ids), `create_session` for a database session outside a request,
+`run_plugin_env` for the plugin's Alembic `env.py`, the traffic events and
 decisions, the backend protocols, and `Event`. Everything else in `gateway` is
 internal and moves without notice; what `gateway.plugins.api` exports is kept
-stable within one `plugin_api` version.
+stable within one `plugin_api` version, and the repository's architecture
+check fails when a name is imported there without being exported.
+
+`ctx` also carries `ctx.mode` (`standalone`, `hosted`, or `hybrid`) and
+`ctx.log`, a child of the gateway's logger named after the plugin, which is
+where a plugin's own lines belong.
 
 ```python
 # src/otari_agent_gates/__init__.py
@@ -221,7 +231,11 @@ load). It is the live dict: when an operator changes a setting from the
 dashboard the same dict is updated in place and every `ctx.on_settings_change`
 listener runs, so a plugin that reads `ctx.config` at use time needs nothing
 more. Stored dashboard values win over `config.yml` the way the gateway's own
-runtime overrides do.
+runtime overrides do. `ctx.validate_settings(fn)` runs `fn(values)` on the
+values as they would apply before a dashboard write is persisted; it refuses
+by raising `ValueError` (the message reaches the operator) or returning a
+string, so a plugin can hold two settings to each other where the manifest's
+per-key types cannot.
 
 ### What a plugin can add
 
@@ -284,16 +298,21 @@ runtime overrides do.
   `ctx.on_shutdown(fn)` runs before the database engine is disposed. A
   startup hook that raises marks the plugin failed (its routes stay mounted
   until the next start). `ctx.add_health_check(fn, critical=False)` reports
-  into `/health` under the plugin's name; a `critical` check that fails takes
-  `/health/readiness` to 503. Every hook may be sync or async and is cut off
-  at `plugins.hook_timeout_ms`.
+  into `/health` under the plugin's name as `ok` or `failing`. A `critical`
+  check that fails takes `/health/readiness` to 503 only for a plugin the
+  operator lists under `plugins.health_critical`: the plugin asks, the operator
+  grants, and neither alone takes the gateway out of rotation. Every hook may
+  be sync or async and is cut off at `plugins.hook_timeout_ms`.
 - **Events.** `ctx.subscribe(name, handler)` runs `handler(event)` for a
   gateway event: `usage.logged` (one usage row: model, provider, status, cost,
   tokens, annotations), `budget.exceeded` (user, subject, axis),
   `key.created`, `key.deleted`, and `plugin.settings_changed`; `"*"` gets them
-  all. Handlers run as tasks off the request path, each cut off at
-  `plugins.event_timeout_ms` and fenced by a `try`, so a notifier that is slow
-  or broken never delays or fails a response. `event.payload` carries ids and
+  all. Handlers run as tasks off the request path, fenced by a `try`; an
+  async one is cut off at `plugins.event_timeout_ms`, and a sync one runs to
+  completion on the event loop, so keep it short. A notifier that is slow or
+  broken never delays or fails a response. Handlers in flight are capped at a
+  thousand across every plugin; past that an emit drops its event and logs
+  it, rather than queue without bound. `event.payload` carries ids and
   numbers, plus whatever observers annotated on a usage row; it carries no
   request or response text of the gateway's own.
 - **Guardrail backends.** `ctx.add_guardrail(name, backend)` offers a profile
@@ -303,10 +322,15 @@ runtime overrides do.
   free. `backend.check(text, direction=, kwargs=)` is async and returns a
   `GuardrailOutcome(valid, explanation, score)`; a raise is the guardrail
   being unevaluable, handled by the entry's `mode` and `on_unavailable`.
+  Only `direction="input"` runs today, on the user's text before dispatch;
+  an output check is a later phase and will widen the type then.
 - **Tools.** `ctx.add_tool(name, factory)` offers a tool the gateway runs for
-  the model. `factory()` is called per request and returns an object with the
+  the model. `factory` is called per request and returns an object with the
   `ToolBackend` members (`openai_tools`, `owns_tool`, `call_tool`,
-  `purpose_hints`), optionally an async context manager. A request opts in with
+  `purpose_hints`), optionally an async context manager. A factory that takes
+  an argument is handed the request's `Caller` (API key, user, workspace), so
+  a tool can act for whoever sent the request; one that takes none is called
+  bare. A request opts in with
   a tool entry `{"type": "plugin", "name": "<plugin>:<name>"}`, and the
   gateway's tool loop drives it the way it drives web search and code
   execution, which a request cannot combine with in one call.
@@ -408,6 +432,39 @@ thread: the request stops waiting at the budget, the thread finishes on its
 own, and the answer is discarded, so a sync observer that touches shared state
 must be thread-safe. Either way a plugin can slow a request by that budget per
 call, and no more.
+
+## Testing a plugin
+
+`gateway.plugins.testing` loads a plugin the way the gateway does, without a
+gateway, so a plugin's own suite can run against the real `PluginContext`
+and the real traffic seam with no database and no network:
+
+```python
+from pathlib import Path
+
+from gateway.plugins.api import ToolCall
+from gateway.plugins.testing import chat, load_plugin, observe
+
+PLUGIN = Path(__file__).parent.parent / "src" / "otari_agent_gates"
+
+
+async def test_force_push_is_denied():
+    plugin = load_plugin(PLUGIN, settings={"strict": True})
+    assert plugin.status == "loaded", plugin.error
+
+    hooks = await observe(plugin, chat([{"role": "user", "content": "push it"}]))
+    assert hooks.blocked is None
+    denial = await hooks.tool_call(ToolCall("c1", "Bash", {"command": "git push --force"}))
+    assert denial == "Never force-push."
+```
+
+`load_plugin` returns what the gateway's listing would show (`status`,
+`error`, and everything `register` contributed), `chat`, `messages`, and
+`responses` build the conversation an observer sees from each API's own
+request shape, and `observe` runs `on_request`; the returned hooks carry the
+decisions and take `tool_call` and `response` for the rest of a request.
+Routes are plain FastAPI routers, so mount one on a `FastAPI()` of your own
+and test it with `TestClient`.
 
 ## Getting listed
 

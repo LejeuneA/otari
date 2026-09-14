@@ -9,6 +9,8 @@ Enforces:
 5. OSS/enterprise boundary: OSS code must not import the enterprise overlay.
 6. Port boundaries: a port may describe the domain but not import a caller or an adapter.
 7. Composition root: only gateway/container.py may name a concrete adapter.
+8. Plugin surface: gateway/plugins/api.py exports every name it imports, and
+   nothing in the gateway imports it; it is written for plugins, not for us.
 
 Usage:
     uv run python scripts/check_architecture.py
@@ -241,6 +243,50 @@ def check_naming_conventions(src_root: Path) -> list[str]:
     return violations
 
 
+PLUGIN_API = GATEWAY_ROOT / "plugins" / "api.py"
+# Written for plugin authors like api.py, so it may import it.
+PLUGIN_API_CONSUMERS = {GATEWAY_ROOT / "plugins" / "testing.py"}
+
+
+def check_plugin_api_surface(gateway_root: Path) -> list[str]:
+    """The plugin contract is one module: every import in it is exported, and nothing here imports it.
+
+    A name imported into ``gateway.plugins.api`` and left out of ``__all__`` is
+    a plugin dependency nobody promised to keep. Gateway code importing the
+    module would make the contract's shape depend on internal callers.
+    """
+    violations: list[str] = []
+    if not PLUGIN_API.is_file():
+        return violations
+    tree = ast.parse(PLUGIN_API.read_text(encoding="utf-8"))
+    exported: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+            exported = {
+                elt.value
+                for elt in getattr(node.value, "elts", [])
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+            }
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("gateway"):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if name not in exported:
+                    violations.append(
+                        f"{PLUGIN_API.relative_to(REPO_ROOT)}:{node.lineno} imports {name} but does not export it"
+                    )
+    for py_file in sorted(gateway_root.rglob("*.py")):
+        if py_file == PLUGIN_API or py_file in PLUGIN_API_CONSUMERS or "__pycache__" in py_file.parts:
+            continue
+        for statement in ast.walk(ast.parse(py_file.read_text(encoding="utf-8"))):
+            if not isinstance(statement, ast.Import | ast.ImportFrom):
+                continue
+            names = [statement.module] if isinstance(statement, ast.ImportFrom) else [a.name for a in statement.names]
+            if "gateway.plugins.api" in names:
+                violations.append(f"{py_file.relative_to(REPO_ROOT)}:{statement.lineno} imports gateway.plugins.api")
+    return violations
+
+
 def main() -> int:
     """Run the architecture checks over the gateway package and the OSS test suite."""
     # Both must exist: silently skipping either would let its rules (including
@@ -267,6 +313,7 @@ def main() -> int:
         )
 
     naming_violations = check_naming_conventions(SRC_ROOT)
+    plugin_violations = check_plugin_api_surface(GATEWAY_ROOT)
 
     if import_violations:
         print("❌ Architecture violations found:\n")
@@ -281,7 +328,13 @@ def main() -> int:
             print(f"  {violation}")
         print(f"\nTotal naming violations: {len(naming_violations)}")
 
-    if import_violations or naming_violations:
+    if plugin_violations:
+        print("\n❌ Plugin surface violations:\n")
+        for violation in plugin_violations:
+            print(f"  {violation}")
+        print(f"\nTotal plugin surface violations: {len(plugin_violations)}")
+
+    if import_violations or naming_violations or plugin_violations:
         print("\n💡 See ARCHITECTURE.md for the intended layering")
         return 1
 

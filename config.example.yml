@@ -113,5 +113,6 @@ providers:
 #   event_timeout_ms: 5000      # budget per plugin event handler (off the request path)
 #   hook_timeout_ms: 30000      # budget per plugin startup or shutdown hook
 #   health_timeout_ms: 5000     # budget per plugin health check when /health asks
+#   health_critical: []         # plugins whose critical health checks may take readiness to 503
 #   agent-gates:
 #     # a plugin's own settings, under its name

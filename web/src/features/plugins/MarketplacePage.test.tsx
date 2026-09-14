@@ -437,7 +437,8 @@ describe("MarketplacePage", () => {
             manifest: pluginManifest({
               name: "agent-gates",
               plugin_api: 3,
-              supported_here: false,
+              needs_newer_gateway:
+                "needs plugin API 3; this gateway provides 1",
               modes: ["standalone"],
               pages: ["Agent gates"],
               settings: [pluginSettingField()],
@@ -455,7 +456,7 @@ describe("MarketplacePage", () => {
     await user.click(await screen.findByRole("button", { name: "Install" }))
     const dialog = await screen.findByRole("alertdialog")
 
-    expect(within(dialog).getByText(/Needs plugin API 3/)).toBeVisible()
+    expect(within(dialog).getByText(/needs plugin API 3/)).toBeVisible()
     expect(
       within(dialog).getByRole("button", { name: "Install" }),
     ).toBeDisabled()

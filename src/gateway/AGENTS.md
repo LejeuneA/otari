@@ -48,7 +48,10 @@ lifespan after migrations and stored settings (`plugin_settings_service.py`,
 rows in `runtime_settings` under `plugin:`). A plugin that fails to load is
 listed as failed, never a refused boot. The contract a plugin writes against
 is `docs/plugins.md` and `plugins/api.py` (versioned as `plugin_api`); keep
-both stable, since plugin repositories depend on them.
+both stable, since plugin repositories depend on them, and the architecture
+check fails when `api.py` imports a name it does not export or when gateway
+code imports `api.py`. `plugins/testing.py` is the harness a plugin's own
+suite uses, and answers to the same rule.
 
 ## Request lifecycle
 

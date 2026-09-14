@@ -50,12 +50,22 @@ async def _check_platform_reachability(config: GatewayConfig) -> bool:
     return True
 
 
+def public_plugin_status(status: str) -> str:
+    """What the health routes publish for a plugin: the word, never the check's exception text.
+
+    The routes answer without a credential, and a failing check's message is
+    whatever the plugin raised; the operator listing carries the detail.
+    """
+    return "ok" if status == "ok" else "failing"
+
+
 async def _plugin_health(request: Request) -> tuple[dict[str, str], bool]:
-    """Every loaded plugin's health checks, and whether a critical one failed."""
+    """Every loaded plugin's health, as a public word each, and whether a critical check failed."""
     registry: PluginRegistry | None = getattr(request.app.state, "plugins", None)
     if registry is None:
         return {}, False
-    return await registry.check_health()
+    report, critical_failure = await registry.check_health()
+    return {name: public_plugin_status(status) for name, status in report.items()}, critical_failure
 
 
 @router.get("")

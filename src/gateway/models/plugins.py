@@ -21,6 +21,8 @@ DEFAULT_GITHUB_TOPIC = "otari-plugin"
 # exports and how ``PluginContext`` behaves. A manifest names the version it
 # was written against; a gateway refuses a plugin that wants a newer one.
 PLUGIN_API_VERSION = 1
+# The oldest plugin_api this gateway still loads; raised when a version is retired.
+PLUGIN_API_MIN_VERSION = 1
 
 # The name is also a URL segment (``/api/v1/plugins/<name>``, ``/plugins/<name>/ui``),
 # a directory name under the plugins directory, and a suffix on the plugin's
@@ -168,9 +170,14 @@ class PluginSettingSpec(BaseModel):
     editable: bool = Field(default=True, description="Whether the dashboard may change it; config.yml always can.")
 
     @model_validator(mode="after")
-    def _default_matches_type(self) -> "PluginSettingSpec":
+    def _consistent(self) -> "PluginSettingSpec":
         if self.default is not None and not setting_value_matches(self.type, self.default):
             msg = f"default {self.default!r} is not of type {self.type}"
+            raise ValueError(msg)
+        if self.secret and self.type != "str":
+            # Stored encrypted and read back as text, so any other type would be
+            # written from the dashboard and then skipped on the next start.
+            msg = f"a secret setting must be of type str, not {self.type}"
             raise ValueError(msg)
         return self
 
@@ -318,12 +325,14 @@ class PluginManifest(BaseModel):
         """The declared kinds this gateway does not know."""
         return [kind for kind in self.contributes if kind not in KNOWN_CONTRIBUTIONS]
 
-    def needs_newer_gateway(self, current_version: str) -> str | None:
+    def needs_newer_gateway(self, current_version: str, *, plugin_api: int = PLUGIN_API_VERSION) -> str | None:
         """Why this gateway cannot load the plugin, or ``None`` when it can.
 
         Known before the plugin's code is imported: shown in the install dialog,
         and the reason a plugin is listed as failed without having run.
         """
+        if self.plugin_api > plugin_api:
+            return f"needs plugin API {self.plugin_api}; this gateway provides {plugin_api}"
         if self.min_otari_version and version_tuple(current_version) < version_tuple(self.min_otari_version):
             return f"needs otari {self.min_otari_version} or newer; this is {current_version}"
         if unsupported := self.unsupported_contributions:
@@ -409,6 +418,14 @@ class PluginsConfig(BaseModel):
         description="Where drop-in plugins live; also where upload and install write.",
     )
     disabled: list[str] = Field(default_factory=list, description="Discovered plugins to leave unloaded.")
+    health_critical: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Plugins whose critical health checks may take /health/readiness to 503. A plugin asks for "
+            "that with critical=True; the operator grants it here, so an installed plugin cannot take "
+            "the gateway out of rotation on its own."
+        ),
+    )
     allow_install: bool = Field(
         default=False,
         description=(

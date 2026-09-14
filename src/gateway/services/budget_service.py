@@ -749,6 +749,7 @@ async def reserve_budget(
             if refused_on is not None
             else "budget"
         )
+        emit_plugin_event("budget.exceeded", user_id=user_id, subject=f"User '{user_id}'", axis=axis)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{user_id}' has exceeded {axis} limit",

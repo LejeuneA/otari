@@ -206,3 +206,30 @@ describe("PluginPage", () => {
     expect(document.querySelector("iframe")).toBeNull()
   })
 })
+
+describe("PluginPage for a member", () => {
+  it("frames a member page from the pages route when the operator list is refused", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/plugins/pages")) {
+        return Response.json({
+          pages: [
+            pluginPage({
+              id: "runs",
+              label: "Runs",
+              url: "/plugins/agent-gates/ui/runs/",
+              path: "/plugins/agent-gates/runs",
+              audience: "member",
+            }),
+          ],
+        })
+      }
+      return Response.json({ detail: "Forbidden" }, { status: 403 })
+    })
+    await renderAt("/plugins/agent-gates/runs", "/plugins/$name/$page")
+
+    const frame = await screen.findByTitle("Runs")
+    expect(frame.tagName).toBe("IFRAME")
+    expect(frame).toHaveAttribute("src", "/plugins/agent-gates/ui/runs/")
+  })
+})
