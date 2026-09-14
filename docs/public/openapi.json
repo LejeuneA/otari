@@ -5360,6 +5360,14 @@
             ],
             "title": "Error"
           },
+          "events": {
+            "description": "Events it subscribed to.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Events",
+            "type": "array"
+          },
           "getting_started": {
             "anyOf": [
               {
@@ -5370,6 +5378,26 @@
               }
             ],
             "title": "Getting Started"
+          },
+          "guardrails": {
+            "description": "Guardrail profiles it offers.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Guardrails",
+            "type": "array"
+          },
+          "health": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What its last health check reported.",
+            "title": "Health"
           },
           "homepage": {
             "anyOf": [
@@ -5398,9 +5426,28 @@
             "title": "Migrations",
             "type": "boolean"
           },
+          "modes": {
+            "items": {
+              "enum": [
+                "standalone",
+                "hosted",
+                "hybrid"
+              ],
+              "type": "string"
+            },
+            "title": "Modes",
+            "type": "array"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PluginPageInfo"
+            },
+            "title": "Pages",
+            "type": "array"
           },
           "pending": {
             "anyOf": [
@@ -5414,10 +5461,29 @@
             "description": "A change on disk that takes effect on the next start, when one is waiting.",
             "title": "Pending"
           },
+          "plugin_api": {
+            "title": "Plugin Api",
+            "type": "integer"
+          },
+          "router_backends": {
+            "description": "Router backends it offers.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Router Backends",
+            "type": "array"
+          },
           "routes": {
             "description": "How many routes the plugin registered.",
             "title": "Routes",
             "type": "integer"
+          },
+          "settings": {
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingField"
+            },
+            "title": "Settings",
+            "type": "array"
           },
           "source": {
             "enum": [
@@ -5436,6 +5502,20 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "tools": {
+            "description": "Tool backends it offers.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "traffic": {
+            "default": false,
+            "description": "Whether it watches inference traffic.",
+            "title": "Traffic",
+            "type": "boolean"
           },
           "ui": {
             "anyOf": [
@@ -5458,6 +5538,8 @@
           "description",
           "source",
           "status",
+          "plugin_api",
+          "modes",
           "contributes",
           "api_prefix",
           "routes",
@@ -9686,6 +9768,19 @@
             ],
             "title": "Homepage"
           },
+          "modes": {
+            "description": "The runtime modes it loads in.",
+            "items": {
+              "enum": [
+                "standalone",
+                "hosted",
+                "hybrid"
+              ],
+              "type": "string"
+            },
+            "title": "Modes",
+            "type": "array"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -9702,6 +9797,31 @@
             "description": "Why this gateway would refuse to load the plugin, when it would: known before install.",
             "title": "Needs Newer Gateway"
           },
+          "pages": {
+            "description": "Labels of the dashboard pages it ships.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "plugin_api": {
+            "description": "The plugin API version it is written against.",
+            "title": "Plugin Api",
+            "type": "integer"
+          },
+          "settings": {
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingField"
+            },
+            "title": "Settings",
+            "type": "array"
+          },
+          "supported_here": {
+            "description": "Whether this gateway provides that plugin API version.",
+            "title": "Supported Here",
+            "type": "boolean"
+          },
           "version": {
             "title": "Version",
             "type": "string"
@@ -9711,10 +9831,126 @@
           "name",
           "version",
           "description",
+          "plugin_api",
+          "supported_here",
+          "modes",
           "contributes",
           "config_keys"
         ],
         "title": "PluginManifestSummary",
+        "type": "object"
+      },
+      "PluginPageInfo": {
+        "description": "One dashboard page a plugin ships, and where its row goes.",
+        "properties": {
+          "audience": {
+            "enum": [
+              "operator",
+              "member"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "icon": {
+            "enum": [
+              "layout",
+              "shield",
+              "activity",
+              "tool",
+              "zap",
+              "package",
+              "check-circle",
+              "git-branch",
+              "eye",
+              "bell",
+              "book",
+              "database",
+              "globe",
+              "message-square",
+              "sliders",
+              "terminal",
+              "search",
+              "lock"
+            ],
+            "title": "Icon",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "order": {
+            "title": "Order",
+            "type": "integer"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "enum": [
+                  "tools",
+                  "routing"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "path": {
+            "description": "The dashboard path that frames it.",
+            "title": "Path",
+            "type": "string"
+          },
+          "section": {
+            "enum": [
+              "observe",
+              "build",
+              "access",
+              "extend",
+              "none"
+            ],
+            "title": "Section",
+            "type": "string"
+          },
+          "url": {
+            "description": "Where the page is served; the dashboard frames it.",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "url",
+          "path",
+          "icon",
+          "section",
+          "order",
+          "audience"
+        ],
+        "title": "PluginPageInfo",
+        "type": "object"
+      },
+      "PluginPagesResponse": {
+        "properties": {
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PluginPageInfo"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pages"
+        ],
+        "title": "PluginPagesResponse",
         "type": "object"
       },
       "PluginProblem": {
@@ -9744,6 +9980,79 @@
         "title": "PluginProblem",
         "type": "object"
       },
+      "PluginSettingField": {
+        "description": "One typed setting from the manifest, as the dashboard renders it.",
+        "properties": {
+          "default": {
+            "title": "Default"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "editable": {
+            "default": true,
+            "title": "Editable",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "secret": {
+            "default": false,
+            "title": "Secret",
+            "type": "boolean"
+          },
+          "type": {
+            "enum": [
+              "str",
+              "int",
+              "float",
+              "bool",
+              "list",
+              "object"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "type"
+        ],
+        "title": "PluginSettingField",
+        "type": "object"
+      },
+      "PluginSettingsResponse": {
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/PluginSettingField"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "plugin": {
+            "title": "Plugin",
+            "type": "string"
+          },
+          "values": {
+            "additionalProperties": true,
+            "description": "Each declared setting's live value; a set secret reads as masked.",
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "required": [
+          "plugin",
+          "fields",
+          "values"
+        ],
+        "title": "PluginSettingsResponse",
+        "type": "object"
+      },
       "PluginUiInfo": {
         "properties": {
           "label": {
@@ -9751,7 +10060,7 @@
             "type": "string"
           },
           "url": {
-            "description": "Where the plugin's page is served; the dashboard frames it.",
+            "description": "Where the plugin's first page is served; the dashboard frames it.",
             "title": "Url",
             "type": "string"
           }
@@ -9773,6 +10082,11 @@
           "install_allowed": {
             "title": "Install Allowed",
             "type": "boolean"
+          },
+          "plugin_api": {
+            "description": "The plugin API version this gateway provides.",
+            "title": "Plugin Api",
+            "type": "integer"
           },
           "plugins": {
             "items": {
@@ -9800,7 +10114,8 @@
           "problems",
           "directory",
           "install_allowed",
-          "restart_required"
+          "restart_required",
+          "plugin_api"
         ],
         "title": "PluginsResponse",
         "type": "object"
@@ -13098,6 +13413,22 @@
           }
         },
         "title": "UpdateOwnKeyRequest",
+        "type": "object"
+      },
+      "UpdatePluginSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "description": "Settings to change; null clears one back to config or default.",
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "UpdatePluginSettingsRequest",
         "type": "object"
       },
       "UpdateScopedBudgetRequest": {
@@ -19615,16 +19946,14 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "General health check endpoint.\n\nReturns basic health status. For infrastructure monitoring,\nuse /health/readiness or /health/liveness instead.",
+        "description": "General health check endpoint.\n\nReturns basic health status. For infrastructure monitoring,\nuse /health/readiness or /health/liveness instead. ``plugins`` lists each\nloaded plugin that registered a health check, with what it reported.",
         "operationId": "health-health_check",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
+                  "additionalProperties": true,
                   "title": "Response Health-Health Check",
                   "type": "object"
                 }
@@ -26127,6 +26456,36 @@
         ]
       }
     },
+    "/api/v1/plugins/pages": {
+      "get": {
+        "description": "The dashboard pages loaded plugins ship, for the rail: every member page, and the operator pages for an operator.\n\nAuthenticated the way the operator routes are, but not gated on the answer:\na member sees the pages a plugin declared for members and nothing else.",
+        "operationId": "plugins-list_plugin_pages",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginPagesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "List Plugin Pages",
+        "tags": [
+          "plugins"
+        ]
+      }
+    },
     "/api/v1/plugins/upload": {
       "post": {
         "description": "Install a plugin from an uploaded zip or tar.gz. It loads on the next start.\n\n``force`` installs an archive whose version is older than the installed one.",
@@ -26230,6 +26589,116 @@
           }
         ],
         "summary": "Remove Plugin",
+        "tags": [
+          "plugins"
+        ]
+      }
+    },
+    "/api/v1/plugins/{name}/settings": {
+      "get": {
+        "description": "A plugin's typed settings and their live values.",
+        "operationId": "plugins-get_plugin_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Get Plugin Settings",
+        "tags": [
+          "plugins"
+        ]
+      },
+      "put": {
+        "description": "Change a plugin's settings from the dashboard.\n\nValidated against the manifest, persisted, then applied to the running\nplugin, which is told through its ``on_settings_change`` listeners. A\n``null`` clears a key back to what config.yml or the manifest default says.",
+        "operationId": "plugins-update_plugin_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePluginSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "XApiKeyAuth": []
+          }
+        ],
+        "summary": "Update Plugin Settings",
         "tags": [
           "plugins"
         ]
