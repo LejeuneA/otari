@@ -28,6 +28,7 @@ from gateway.services.bootstrap_service import bootstrap_first_api_key
 from gateway.services.budget_reservation_ledger import run_reservation_sweeper
 from gateway.services.dashboard_session_service import revoke_sessions_on_master_key_change
 from gateway.services.file_store import build_file_store
+from gateway.services.guardrail_runner import reset_guardrail_runner
 from gateway.services.log_writer import LogWriter, NoopLogWriter, create_log_writer
 from gateway.services.master_key_service import ensure_master_key
 from gateway.services.model_catalog_service import (
@@ -505,6 +506,12 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             # POST /api/v1/search dispatches on one pooled client for the process, so
             # shutdown owns closing it. A no-op when no search was ever served.
             await close_search_client()
+            # The guardrail runner holds built guardrails, which for a local one
+            # means loaded model weights. Unconditional, unlike the resets above:
+            # it is not gated on a refresher, and a hybrid gateway runs the
+            # guardrails its config block defines through the same instance. A
+            # no-op when nothing ever built one.
+            reset_guardrail_runner()
             # After the log writer, whose final flush is the last thing to need
             # a session. Hybrid mode never opened an engine, so this is a no-op there.
             await dispose_db()

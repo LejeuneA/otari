@@ -14,13 +14,18 @@ import asyncio
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
 
 from gateway.models.guardrails import GuardrailConfig
-from gateway.services.guardrail_runner import GuardrailDefinition, GuardrailRunner
+from gateway.services.guardrail_runner import (
+    GuardrailDefinition,
+    GuardrailRunner,
+    get_guardrail_runner,
+    reset_guardrail_runner,
+)
 from gateway.services.guardrails import GuardrailsNotReachableError
 
 _HOSTED = "lakera_guard"  # BackendType.HOSTED_API: concurrent calls are fine
@@ -529,3 +534,57 @@ def test_importing_the_runner_loads_no_model_backend() -> None:
     """The base install runs the 9 hosted-API guardrails; nothing here pulls torch in."""
     assert "torch" not in sys.modules
     assert "transformers" not in sys.modules
+
+
+@pytest.fixture(autouse=True)
+def _drop_the_shared_runner() -> Iterator[None]:
+    """Never let one test's runner answer another's call.
+
+    Its locks and tasks bind to the loop that first used them, and
+    pytest-asyncio gives each test a loop of its own, so a leaked instance would
+    fail the next test from inside asyncio rather than where the mistake was.
+    """
+    reset_guardrail_runner()
+    yield
+    reset_guardrail_runner()
+
+
+def test_the_shared_runner_is_one_instance() -> None:
+    """The cache only pays for itself if every caller reaches the same one."""
+    assert get_guardrail_runner() is get_guardrail_runner()
+
+
+def test_resetting_drops_the_shared_runner() -> None:
+    """Shutdown drops it, so the next lifespan does not inherit the last one's locks."""
+    first = get_guardrail_runner()
+
+    reset_guardrail_runner()
+
+    assert get_guardrail_runner() is not first
+
+
+def test_resetting_twice_is_harmless() -> None:
+    """The lifespan's finally runs in hybrid too, where nothing ever built one."""
+    reset_guardrail_runner()
+    reset_guardrail_runner()
+
+
+@pytest.mark.asyncio
+async def test_the_shared_runner_holds_what_it_builds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store write reaches this instance, so what it evicts is what serves traffic."""
+    builds = 0
+
+    def _create(_name: Any, **_kwargs: Any) -> _Guardrail:
+        nonlocal builds
+        builds += 1
+        return _Guardrail()
+
+    _install(monkeypatch, create=_create)
+
+    await get_guardrail_runner().run(definition=_definition(), cfg=_config(), input_text="hi")
+    await get_guardrail_runner().run(definition=_definition(), cfg=_config(), input_text="hi")
+    assert builds == 1
+
+    get_guardrail_runner().evict("prompt-injection")
+    await get_guardrail_runner().run(definition=_definition(), cfg=_config(), input_text="hi")
+    assert builds == 2
