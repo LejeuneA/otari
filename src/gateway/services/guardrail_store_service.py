@@ -19,11 +19,18 @@ plain half is stored as JSON and every secret goes into one map encrypted as a
 single string. What reaches the runner is the two halves merged back together,
 so the split is storage and never semantics.
 
-The omission is the in-memory overlay. Nothing on the request path reads a
-definition yet, so there is no synchronous read to serve from a cache, and the
-overlay plus its TTL refresher arrive with the request path in otari#1113. What
-this module gives that work is :func:`definition_from_row` and
-:func:`definition_from_config_entry`, which are what such a cache would hold.
+The omission was the in-memory overlay, which otari#1113 filled: the request
+path resolves a profile synchronously, so it is served from a cache loaded at
+startup and refreshed on a TTL, never a query per request.
+
+Where that overlay differs from its two siblings is that it does not rewrite
+``config.guardrails``. They must, because many call sites read
+``config.providers`` and ``config.search_tools`` directly; here
+:func:`local_guardrail_definition` is the only reader, so the merge lives there
+and the config map stays the operator's file as written. That keeps
+:func:`config_file_guardrails` honest for the four route call sites that ask
+whether a name is the file's, and keeps decrypted vendor keys off a long-lived
+config object.
 
 Encryption happens here and nowhere above: a route passes plaintext in and gets
 a masked row back. Standalone mode only for the stored half; the config half
@@ -33,13 +40,16 @@ gateway has.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.config import GatewayConfig, validate_guardrail_create_kwargs
+from gateway.core.database import create_session
 from gateway.log_config import logger
 from gateway.models.entities import GuardrailCredential
 from gateway.models.secret_fields import REDACTED_VALUE, restore_redacted_values
@@ -180,10 +190,12 @@ def definition_from_config_entry(entry: dict[str, Any]) -> GuardrailDefinition:
 def config_file_guardrails(config: GatewayConfig) -> dict[str, dict[str, Any]]:
     """The config-file guardrails.
 
-    A pass-through today, unlike its provider and search-tool siblings, because
-    nothing overlays stored rows onto ``config.guardrails``. It exists so the
-    callers that ask "is this name the operator's file's?" do not have to change
-    when otari#1113 decides whether an overlay belongs here.
+    A genuine pass-through, unlike its provider and search-tool siblings, which
+    have to strip an overlay their store wrote back over the config map. This
+    store deliberately writes nothing there (otari#1113 settled that), so
+    ``config.guardrails`` is always the operator's file as loaded, and the
+    callers that ask "is this name the operator's file's?" get a true answer
+    with no baseline to keep.
     """
     return config.guardrails
 
@@ -195,6 +207,147 @@ def config_entry_is_enabled(entry: dict[str, Any]) -> bool:
     leaves the key out rather than filling it in.
     """
     return entry.get("enabled", True) is not False
+
+
+# --------------------------------------------------------------------------- #
+# The overlay
+# --------------------------------------------------------------------------- #
+
+# How long a worker may serve a stale guardrail overlay before refreshing. A
+# definition added or edited anywhere reaches every replica within this.
+GUARDRAIL_CACHE_TTL_SECONDS: Final = 30.0
+
+# profile name -> what to run, or None when the row owns the name but cannot run:
+# it is switched off, or its secrets no longer decrypt. The distinction that
+# matters is membership, not the value: a name in here belongs to the store and
+# never falls through to `config.guardrails`.
+_cache: dict[str, GuardrailDefinition | None] = {}
+_cached_at: float | None = None
+
+
+def cached_guardrails() -> dict[str, GuardrailDefinition | None]:
+    """The stored overlay this worker last loaded. A copy, so a caller cannot edit it."""
+    return dict(_cache)
+
+
+def cache_is_stale(ttl: float = GUARDRAIL_CACHE_TTL_SECONDS) -> bool:
+    """Whether the cache has never been loaded or has outlived ``ttl``.
+
+    For the refresher and for tests. Deliberately not consulted by
+    :func:`local_guardrail_definition`; see its docstring.
+    """
+    return _cached_at is None or (time.monotonic() - _cached_at) >= ttl
+
+
+def reset_guardrail_cache() -> None:
+    """Drop the overlay so the next load starts clean (startup, shutdown, tests)."""
+    global _cached_at  # noqa: PLW0603
+
+    _cache.clear()
+    _cached_at = None
+
+
+def _cache_value(row: GuardrailCredential) -> GuardrailDefinition | None:
+    """What the overlay holds for one row: a definition, or ``None`` to shadow.
+
+    A disabled row and a row whose secrets will not decrypt are the same answer
+    here, and it is not the answer the provider overlay gives. That one omits an
+    undecryptable row, which is right for a table with no ``enabled`` column:
+    there is no "present but off" state to confuse it with. Here omitting it
+    would let a ``guardrails:`` entry of the same name take over silently, while
+    the management API keeps reporting the row as shadowing and
+    ``decryptable: false``. The request path agrees with the listing instead.
+    """
+    if not row.enabled:
+        return None
+    try:
+        return definition_from_row(row)
+    except (SecretBoxUnavailableError, SecretDecryptionError):
+        logger.warning(
+            "Stored guardrail '%s' cannot run: its secrets could not be decrypted "
+            "(check OTARI_SECRET_KEY). It still shadows a config guardrail of the same name.",
+            row.name,
+        )
+        return None
+
+
+def local_guardrail_definition(config: GatewayConfig, profile: str) -> GuardrailDefinition | None:
+    """What this gateway would run for ``profile``, or ``None`` if it defines none.
+
+    The request path's only read, and the reason the overlay exists. Synchronous
+    and side-effect free: it reads this module's cache and ``config.guardrails``,
+    and that is all. It must stay that way. A hybrid gateway never loads the
+    cache and has no database to load it from, so an empty cache means "no stored
+    definitions" rather than "not loaded yet"; a lazy load added here would ask
+    for a session that mode never opened. For the same reason it never consults
+    :func:`cache_is_stale` — converging is the refresher's job.
+
+    Membership in the cache, not the value, is what decides whose name it is. A
+    row that is present but unrunnable still shadows the config entry below it.
+    """
+    if profile in _cache:
+        return _cache[profile]
+    entry = config.guardrails.get(profile)
+    if entry is None or not config_entry_is_enabled(entry):
+        return None
+    return definition_from_config_entry(entry)
+
+
+async def refresh_guardrail_cache(db: AsyncSession) -> None:
+    """Reload the overlay from the database."""
+    global _cached_at  # noqa: PLW0603
+
+    rows = (await db.execute(select(GuardrailCredential))).scalars().all()
+    overlay = {row.name: _cache_value(row) for row in rows}
+    _cache.clear()
+    _cache.update(overlay)
+    _cached_at = time.monotonic()
+
+
+async def load_guardrails_at_startup(db: AsyncSession, config: GatewayConfig) -> None:
+    """Prime the overlay so the first request does not race the first refresh.
+
+    A failure here is logged rather than raised: stored guardrails are an
+    addition to the config-file ones, and a gateway that serves every config
+    guardrail is better than one that refuses to start.
+    """
+    reset_guardrail_cache()
+    try:
+        await refresh_guardrail_cache(db)
+    except Exception:
+        logger.exception("Failed to load stored guardrails; continuing with config guardrails only")
+        return
+    if _cache:
+        logger.info("Loaded %d stored guardrail(s)", len(_cache))
+    for name in sorted(set(config.guardrails) & set(_cache)):
+        logger.warning(
+            "Stored guardrail '%s' shadows the config.yml guardrail of the same name; "
+            "the stored definition is in effect%s.",
+            name,
+            "" if _cache[name] is not None else ", and it is switched off or unreadable, so neither runs",
+        )
+
+
+async def run_guardrail_refresher(interval: float = GUARDRAIL_CACHE_TTL_SECONDS) -> None:
+    """Reload the overlay forever so other writers' changes arrive.
+
+    A write refreshes the worker that served it; this covers sibling workers and
+    other replicas, which converge within ``interval``. Every error is swallowed
+    and retried on the next tick so a database blip cannot freeze the overlay.
+    Cancelled at shutdown.
+
+    Takes no config, unlike its provider and search-tool siblings: there is no
+    config map to rebuild, only a cache to replace.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with create_session() as db:
+                await refresh_guardrail_cache(db)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Stored guardrail refresh failed; retrying in %ss", interval, exc_info=True)
 
 
 # --------------------------------------------------------------------------- #
