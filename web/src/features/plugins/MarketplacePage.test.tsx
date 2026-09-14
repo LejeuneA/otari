@@ -475,6 +475,46 @@ describe("MarketplacePage", () => {
     expect(describes(calls)).toHaveLength(0)
   })
 
+  it("shows a kind this dashboard does not know by its word, with the gateway's refusal", async () => {
+    mockApi({
+      marketplace: marketplaceResponse({
+        verified: [
+          {
+            ...VERIFIED,
+            manifest: pluginManifest({
+              name: "agent-gates",
+              contributes: ["routes", "kernel"],
+              config_keys: [],
+              needs_newer_gateway:
+                "declares kernel, which this gateway (0.30.0) does not know",
+            }),
+          },
+        ],
+      }),
+    })
+    const user = userEvent.setup()
+    await renderPage()
+
+    await user.click(
+      await screen.findByRole("button", { name: "Verified (1)" }),
+    )
+    await user.click(await screen.findByRole("button", { name: "Install" }))
+    const dialog = await screen.findByRole("alertdialog")
+
+    expect(
+      within(dialog).getByText(/This gateway will not load it/),
+    ).toHaveTextContent(
+      "declares kernel, which this gateway (0.30.0) does not know",
+    )
+    const rows = within(dialog)
+      .getAllByRole("listitem")
+      .map((row) => row.textContent)
+    expect(rows).toEqual([
+      "API routes under /api/v1/plugins/agent-gates",
+      "kernel (needs a newer gateway)",
+    ])
+  })
+
   it("reads the manifest from the repository when the listing has none", async () => {
     let answer: (manifest: DescribeAnswer) => void = () => {}
     const calls = mockApi({

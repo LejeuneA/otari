@@ -7404,7 +7404,7 @@ export interface components {
              * Contributes
              * @description What the manifest declares; what loaded is enforced to match.
              */
-            contributes: ("routes" | "cli" | "migrations" | "ui" | "traffic")[];
+            contributes: string[];
             /** Description */
             description: string;
             /** Error */
@@ -9542,9 +9542,9 @@ export interface components {
             config_keys: string[];
             /**
              * Contributes
-             * @description What the plugin adds; enforced when it loads.
+             * @description What the plugin adds, from the closed vocabulary; enforced when it loads.
              */
-            contributes: ("routes" | "cli" | "migrations" | "ui" | "traffic")[];
+            contributes: string[];
             /** Description */
             description: string;
             /**
@@ -9556,6 +9556,11 @@ export interface components {
             homepage?: string | null;
             /** Name */
             name: string;
+            /**
+             * Needs Newer Gateway
+             * @description Why this gateway would refuse to load the plugin, when it would: known before install.
+             */
+            needs_newer_gateway?: string | null;
             /** Version */
             version: string;
         };

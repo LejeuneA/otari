@@ -126,6 +126,7 @@ description = "Checks a coding agent's turn against a repository's stated rules.
 package = "otari_agent_gates"     # the importable package; the manifest sits inside it
 homepage = "https://github.com/mozilla-ai/otari-agent-gates"
 getting_started = "https://github.com/mozilla-ai/otari-agent-gates#quick-start"
+min_otari_version = "0.30.0"      # optional; an older gateway refuses to load the plugin
 contributes = ["routes", "cli", "migrations", "ui", "traffic"]
 config_keys = ["judge_timeout_seconds", "traffic"]
 
@@ -141,6 +142,15 @@ enforced when the plugin loads: a plugin that registers something it did not
 declare is refused with the reason. `config_keys` names what the plugin reads
 from its own block of `config.yml`, and `getting_started` is the page the
 dashboard links a new user to once the plugin is loaded.
+
+The manifest is read leniently, so a plugin written for a newer gateway still
+describes itself on an older one: a key the gateway does not know is ignored,
+and a `contributes` kind it does not know is kept and shown. What the gateway
+cannot honor it refuses before importing the plugin, and says so in the
+install dialog and on the installed row: a `min_otari_version` above its own,
+or a contribution kind it does not know. A plugin that needs a gateway
+feature should therefore name the version that introduced it rather than
+probe for it at load.
 
 `GET /api/v1/plugins/marketplace/describe?repo=owner/name` reads a
 repository's manifest without downloading the plugin, which is what the

@@ -43,8 +43,11 @@ def _manifest_paths(entries: list[Any]) -> list[str]:
 
     The same layouts as ``discovery.find_manifest_in_tree``, seen from the
     repository root rather than from the directory a GitHub archive nests it
-    under: a flat ``<pkg>/`` or a ``src/<pkg>/``. Anything deeper is invisible
-    to the installer, so it is invisible here too.
+    under: the root itself, a flat ``<pkg>/``, or a ``src/<pkg>/``. A root
+    manifest is refused later for sitting outside a package, as the installer
+    refuses it, but it is counted here so that a tree holding two manifests is
+    reported as the installer would report it. Anything deeper is invisible to
+    the installer, so it is invisible here too.
     """
     paths: list[str] = []
     for entry in entries:
@@ -53,7 +56,7 @@ def _manifest_paths(entries: list[Any]) -> list[str]:
         parts = PurePosixPath(str(entry.get("path", ""))).parts
         if parts[-1:] != (MANIFEST_FILENAME,):
             continue
-        if len(parts) == 2 or (len(parts) == 3 and parts[0] == "src"):
+        if len(parts) <= 2 or (len(parts) == 3 and parts[0] == "src"):
             paths.append("/".join(parts))
     return paths
 
@@ -64,9 +67,9 @@ async def _get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Resp
         response = await client.get(url, **kwargs)
         if not response.is_redirect or not response.headers.get("location"):
             return response
-        next_url = httpx.URL(response.headers["location"])
-        if next_url.host not in ALLOWED_HOSTS:
-            msg = f"GitHub redirected {url} off its own hosts, to {next_url.host}; refused"
+        next_url = response.url.join(response.headers["location"])
+        if next_url.scheme != "https" or next_url.host not in ALLOWED_HOSTS:
+            msg = f"GitHub redirected {url} off its own hosts, to {next_url.scheme}://{next_url.host}; refused"
             raise PluginInstallError(msg)
         url = str(next_url)
         kwargs.pop("params", None)
@@ -131,11 +134,11 @@ async def describe_github_plugin(
             raise PluginInstallError(msg)
         entries = payload.get("tree")
         paths = _manifest_paths(entries if isinstance(entries, list) else [])
-        if not paths:
-            msg = f"{repo} holds no {MANIFEST_FILENAME} where an install would look for one"
-            raise PluginInstallError(msg)
         if len(paths) > 1:
             msg = f"{repo} holds more than one {MANIFEST_FILENAME}: {', '.join(paths)}"
+            raise PluginInstallError(msg)
+        if not paths or paths[0] == MANIFEST_FILENAME:
+            msg = f"{repo} holds no {MANIFEST_FILENAME} where an install would look for one"
             raise PluginInstallError(msg)
         try:
             raw = await _get(client, f"https://raw.githubusercontent.com/{repo}/{target}/{paths[0]}")

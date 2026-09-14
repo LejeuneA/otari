@@ -56,11 +56,7 @@ def _entry_from_index(item: dict[str, Any]) -> MarketplaceEntry | None:
     declared = item.get("manifest")
     if isinstance(declared, dict):
         try:
-            # Only the fields this gateway knows: the index is one file shared by
-            # every gateway version, so a key from a newer one must not void it.
-            manifest = PluginManifest.model_validate(
-                {k: v for k, v in declared.items() if k in PluginManifest.model_fields}
-            )
+            manifest = PluginManifest.model_validate(declared)
         except ValueError:
             logger.warning("Marketplace: the verified index's manifest for %s is invalid and was ignored", name)
     return MarketplaceEntry(

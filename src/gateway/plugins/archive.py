@@ -9,7 +9,6 @@ the next start.
 """
 
 import io
-import itertools
 import json
 import re
 import shutil
@@ -23,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from gateway.models.plugins import PluginManifestError
+from gateway.models.plugins import PluginManifestError, version_tuple
 from gateway.plugins.discovery import DiscoveredPlugin, discover_directory_plugin
 
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -147,16 +146,6 @@ def _replace_directory(staged: Path, target: Path) -> None:
 INSTALL_RECORD = "otari-install.json"
 
 
-def _version_tuple(text: str) -> tuple[int, ...]:
-    numbers: list[int] = []
-    for part in text.split("."):
-        digits = "".join(itertools.takewhile(str.isdigit, part))
-        if not digits:
-            break
-        numbers.append(int(digits))
-    return tuple(numbers)
-
-
 def read_install_record(install_dir: Path) -> dict[str, Any] | None:
     """Where an installed plugin came from, written beside its tree at install time."""
     path = install_dir / INSTALL_RECORD
@@ -209,7 +198,7 @@ def install_archive(
         if (
             installed_version
             and not force
-            and _version_tuple(discovered.manifest.version) < _version_tuple(installed_version)
+            and version_tuple(discovered.manifest.version) < version_tuple(installed_version)
         ):
             msg = (
                 f"{discovered.manifest.name} {discovered.manifest.version} is older than the installed "

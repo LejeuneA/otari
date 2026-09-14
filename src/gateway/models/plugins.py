@@ -4,9 +4,10 @@ Schema-less like ``routing`` and ``guardrails`` beside it: nothing here declares
 a table, so it stays out of ``gateway.models.__init__``.
 """
 
+import itertools
 import re
 import tomllib
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -32,6 +33,19 @@ PACKAGE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-
 # The kinds of thing a plugin can add. Each maps to one PluginContext method,
 # and the registry checks what a plugin registered against what it declared.
 Contribution = Literal["routes", "cli", "migrations", "ui", "traffic"]
+KNOWN_CONTRIBUTIONS: frozenset[str] = frozenset(get_args(Contribution))
+CONTRIBUTION_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def version_tuple(text: str) -> tuple[int, ...]:
+    """The leading numeric components of a version string, for a soft comparison."""
+    numbers: list[int] = []
+    for part in text.split("."):
+        digits = "".join(itertools.takewhile(str.isdigit, part))
+        if not digits:
+            break
+        numbers.append(int(digits))
+    return tuple(numbers)
 
 
 class PluginManifestError(ValueError):
@@ -41,7 +55,7 @@ class PluginManifestError(ValueError):
 class PluginUiManifest(BaseModel):
     """The dashboard page a plugin ships, as a static directory."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     path: str = Field(default="static", description="Directory of static files, relative to the package directory.")
     label: str = Field(min_length=1, max_length=40, description="Sidebar label for the page.")
@@ -52,9 +66,14 @@ class PluginManifest(BaseModel):
 
     Read before any plugin code is imported, so the marketplace and the installer
     can describe a plugin without running it.
+
+    A key this gateway does not know is ignored, and a ``contributes`` kind it
+    does not know is kept: a plugin written for a newer gateway still describes
+    itself here, and is refused at load with the reason (see
+    :meth:`needs_newer_gateway`) rather than refused at parse with a stack trace.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     name: str = Field(description="Plugin identifier; also the API and UI mount segment.")
     version: str = Field(min_length=1, max_length=64)
@@ -62,18 +81,20 @@ class PluginManifest(BaseModel):
     package: str = Field(description="The importable Python package the plugin lives in.")
     entrypoint: str = Field(default="register", description="Attribute on the package that registers the plugin.")
     homepage: str | None = Field(default=None, max_length=500)
-    min_otari_version: str | None = Field(default=None, max_length=64)
+    min_otari_version: str | None = Field(
+        default=None, max_length=64, description="The oldest gateway that loads this plugin; older ones refuse it."
+    )
     getting_started: str | None = Field(
         default=None,
         max_length=500,
         description="URL of the page that walks a new user through setting the plugin up.",
     )
-    contributes: list[Contribution] = Field(
+    contributes: list[str] = Field(
         default_factory=list,
         description=(
             "What the plugin adds to the gateway. Declared before any code runs, shown before "
             "install, and enforced at load: a plugin that registers something it did not declare "
-            "is refused."
+            "is refused, and one declaring a kind this gateway does not know needs a newer gateway."
         ),
     )
     config_keys: list[str] = Field(
@@ -109,6 +130,15 @@ class PluginManifest(BaseModel):
             raise ValueError(msg)
         return value
 
+    @field_validator("contributes")
+    @classmethod
+    def _contribution_words(cls, value: list[str]) -> list[str]:
+        for kind in value:
+            if not isinstance(kind, str) or not CONTRIBUTION_PATTERN.fullmatch(kind):
+                msg = f"contributes entry {kind!r} is not a contribution kind"
+                raise ValueError(msg)
+        return value
+
     @model_validator(mode="after")
     def _ui_is_declared(self) -> "PluginManifest":
         # Both halves of this check are in the manifest, so it is refused at
@@ -117,6 +147,23 @@ class PluginManifest(BaseModel):
             msg = 'the manifest ships a [plugin.ui] page but does not declare "ui" in contributes'
             raise ValueError(msg)
         return self
+
+    @property
+    def unsupported_contributions(self) -> list[str]:
+        """The declared kinds this gateway does not know."""
+        return [kind for kind in self.contributes if kind not in KNOWN_CONTRIBUTIONS]
+
+    def needs_newer_gateway(self, current_version: str) -> str | None:
+        """Why this gateway cannot load the plugin, or ``None`` when it can.
+
+        Known before the plugin's code is imported: shown in the install dialog,
+        and the reason a plugin is listed as failed without having run.
+        """
+        if self.min_otari_version and version_tuple(current_version) < version_tuple(self.min_otari_version):
+            return f"needs otari {self.min_otari_version} or newer; this is {current_version}"
+        if unsupported := self.unsupported_contributions:
+            return f"declares {', '.join(unsupported)}, which this gateway ({current_version}) does not know"
+        return None
 
     @property
     def version_table(self) -> str:

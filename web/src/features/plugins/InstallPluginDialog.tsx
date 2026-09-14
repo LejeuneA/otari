@@ -141,6 +141,11 @@ function ManifestBlock({
 function ManifestSummary({ manifest }: { manifest: PluginManifestSummary }) {
   return (
     <div className="flex flex-col gap-2">
+      {manifest.needs_newer_gateway ? (
+        <p className="text-danger">
+          This gateway will not load it: {manifest.needs_newer_gateway}.
+        </p>
+      ) : null}
       <p className="text-emphasis">What it adds</p>
       {manifest.contributes.length > 0 ? (
         <ul className="list-disc flex flex-col gap-1 pl-5">

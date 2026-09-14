@@ -258,21 +258,6 @@ def _undeclared_contributions(plugin: LoadedPlugin) -> set[str]:
     return _actual_contributions(plugin) - set(plugin.manifest.contributes)
 
 
-def _version_tuple(text: str) -> tuple[int, ...]:
-    """The leading numeric components of a version string, for a soft comparison."""
-    numbers: list[int] = []
-    for part in text.split("."):
-        digits = ""
-        for character in part:
-            if not character.isdigit():
-                break
-            digits += character
-        if not digits:
-            break
-        numbers.append(int(digits))
-    return tuple(numbers)
-
-
 def _imported_from_elsewhere(manifest: PluginManifest, package_dir: Path) -> Path | None:
     """Where ``manifest.package`` is already imported from, when that is not ``package_dir``.
 
@@ -317,13 +302,14 @@ def _load_one(discovered: DiscoveredPlugin, settings: dict[str, Any], container:
         install_dir=discovered.install_dir,
         status="loaded",
     )
-    if manifest.min_otari_version and _version_tuple(__version__) < _version_tuple(manifest.min_otari_version):
-        logger.warning(
-            "Plugin %s wants otari >= %s and this is %s; loading it anyway",
-            manifest.name,
-            manifest.min_otari_version,
-            __version__,
-        )
+    refusal = manifest.needs_newer_gateway(__version__)
+    if refusal is not None:
+        # Refused before the import: the plugin said what it needs, and running
+        # it here would fail somewhere less legible than this.
+        plugin.status = "failed"
+        plugin.error = refusal
+        logger.error("Plugin %s not loaded: %s", manifest.name, refusal)
+        return plugin
     if discovered.install_dir is not None:
         # The directory holding the package, so the package name imports. Appended,
         # not put first: a plugin's tree must not shadow a module the gateway

@@ -21,7 +21,9 @@ export function pluginStatusChip(status: PluginStatus): {
 
 /**
  * What one declared contribution means, spelled out for the install dialog.
- * `name` is the plugin's, because its routes mount under it.
+ * `name` is the plugin's, because its routes mount under it. A kind this
+ * dashboard does not know is one a newer gateway defined; it is shown by its
+ * own word, and the gateway's `needs_newer_gateway` says what to do about it.
  */
 export function contributionDescription(
   contribution: PluginContribution,
@@ -38,6 +40,8 @@ export function contributionDescription(
       return "a page in the dashboard"
     case "traffic":
       return "watches inference traffic passing through this gateway"
+    default:
+      return `${contribution} (needs a newer gateway)`
   }
 }
 
@@ -56,6 +60,8 @@ export function contributionChipLabel(
       return "Page"
     case "traffic":
       return "Watches traffic"
+    default:
+      return contribution
   }
 }
 

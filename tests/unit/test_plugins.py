@@ -77,6 +77,10 @@ def write_plugin(root: Path, name: str = "probe", package: str = "probe_plugin",
     manifest = MANIFEST.replace('name = "probe"', f'name = "{name}"').replace(
         'package = "probe_plugin"', f'package = "{package}"'
     )
+    if "add_migrations" in body:
+        manifest = manifest.replace(
+            'contributes = ["routes", "cli", "ui"]', 'contributes = ["routes", "cli", "ui", "migrations"]'
+        )
     (package_dir / "otari-plugin.toml").write_text(manifest)
     (package_dir / "__init__.py").write_text(body)
     (package_dir / "static").mkdir()
@@ -120,7 +124,6 @@ def test_manifest_parses_and_derives_the_version_table() -> None:
         "[other]\nname = 'x'",
         '[plugin]\nname = "Bad Name"\nversion = "1"\npackage = "p"',
         '[plugin]\nname = "ok"\nversion = "1"\npackage = "not a module"',
-        '[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\nunknown = 1',
         '[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\nentrypoint = "1bad"',
     ],
 )
@@ -733,14 +736,56 @@ def test_a_plugin_that_registers_more_than_it_declared_is_refused(tmp_path: Path
     assert plugin.routers == [] and plugin.observers == []
 
 
-def test_manifest_contributions_are_a_closed_vocabulary() -> None:
-    with pytest.raises(PluginManifestError, match="invalid"):
-        parse_manifest('[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\ncontributes = ["kernel"]')
+def test_manifest_contributions_are_a_closed_vocabulary_that_a_newer_gateway_may_extend() -> None:
     manifest = parse_manifest(
         '[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\ncontributes = ["traffic"]\ngetting_started = "https://x/y"'
     )
     assert manifest.contributes == ["traffic"]
     assert manifest.getting_started == "https://x/y"
+    assert manifest.needs_newer_gateway("1.0.0") is None
+
+    # A kind this gateway does not know still parses (the marketplace and the
+    # installer can describe the plugin) and is the reason a load refuses it.
+    newer = parse_manifest('[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\ncontributes = ["kernel"]')
+    assert newer.unsupported_contributions == ["kernel"]
+    assert "kernel" in (newer.needs_newer_gateway("1.0.0") or "")
+    # Something that is not a word is not a kind at all.
+    with pytest.raises(PluginManifestError, match="not a contribution kind"):
+        parse_manifest('[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\ncontributes = ["Kernel Mode"]')
+
+
+def test_manifest_keys_from_a_newer_gateway_are_ignored() -> None:
+    manifest = parse_manifest(
+        '[plugin]\nname = "ok"\nversion = "1"\npackage = "p"\nfuture_key = 1\ncontributes = ["ui"]\n'
+        '[plugin.ui]\nlabel = "x"\nfuture = 2\n'
+    )
+
+    assert manifest.name == "ok"
+    assert manifest.ui is not None and manifest.ui.label == "x"
+
+
+def test_min_otari_version_and_unknown_kinds_refuse_the_load_before_the_import(tmp_path: Path) -> None:
+    marker = "import sys\nsys.modules['probe_plugin_ran'] = True\n"
+    write_plugin(tmp_path, body=marker + PACKAGE)
+    manifest_path = tmp_path / "probe" / "probe_plugin" / "otari-plugin.toml"
+    manifest_path.write_text(MANIFEST.replace('version = "1.2.3"', 'version = "1.2.3"\nmin_otari_version = "999.0.0"'))
+    sys.modules.pop("probe_plugin_ran", None)
+
+    registry = load_plugins(config_for(tmp_path))
+
+    plugin = registry.get("probe")
+    assert plugin is not None
+    assert plugin.status == "failed"
+    assert "999.0.0 or newer" in (plugin.error or "")
+    assert "probe_plugin_ran" not in sys.modules, "a refused plugin must not be imported"
+
+    declared = 'contributes = ["routes", "cli", "ui"]'
+    manifest_path.write_text(MANIFEST.replace(declared, 'contributes = ["ui", "kernel"]'))
+    plugin = load_plugins(config_for(tmp_path)).get("probe")
+    assert plugin is not None
+    assert plugin.status == "failed"
+    assert "kernel" in (plugin.error or "") and "newer" not in (plugin.error or "")
+    assert "does not know" in (plugin.error or "")
 
 
 def fake_github_repo(manifest_text: str | None) -> httpx.MockTransport:
@@ -794,9 +839,22 @@ def fake_github_tree(tree: dict[str, object] | str, manifest_text: str = MANIFES
 async def test_describe_refuses_what_an_install_would_refuse(path: str, reason: str) -> None:
     from gateway.plugins.describe import describe_github_plugin
 
-    tree = {"tree": [{"path": "README.md", "type": "blob"}, {"path": path, "type": "blob"}]}
+    tree: dict[str, object] = {"tree": [{"path": "README.md", "type": "blob"}, {"path": path, "type": "blob"}]}
     with pytest.raises(PluginInstallError, match=reason):
         await describe_github_plugin("example/probe", "v1", transport=fake_github_tree(tree))
+
+
+@pytest.mark.asyncio
+async def test_describe_counts_a_root_manifest_the_installer_would_trip_over() -> None:
+    # A GitHub archive nests the repository under one directory, so the installer
+    # sees a root manifest as ``<dir>/otari-plugin.toml`` and refuses the pair.
+    from gateway.plugins.describe import describe_github_plugin
+
+    tree: dict[str, object] = {
+        "tree": [{"path": "otari-plugin.toml", "type": "blob"}, {"path": "src/probe_plugin/otari-plugin.toml"}]
+    }
+    with pytest.raises(PluginInstallError, match="more than one otari-plugin.toml"):
+        await describe_github_plugin("example/two", "v1", transport=fake_github_tree(tree))
 
 
 @pytest.mark.asyncio
@@ -810,14 +868,33 @@ async def test_describe_reports_a_listing_github_cut_short_or_did_not_answer_as_
 
 
 @pytest.mark.asyncio
-async def test_describe_refuses_a_redirect_off_github() -> None:
+@pytest.mark.parametrize(
+    "location", ["https://evil.example/tree", "http://api.github.com/repos/example/moved/git/trees/HEAD"]
+)
+async def test_describe_refuses_a_redirect_off_github(location: str) -> None:
     from gateway.plugins.describe import describe_github_plugin
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(302, headers={"location": "https://evil.example/tree"})
+        return httpx.Response(302, headers={"location": location})
 
     with pytest.raises(PluginInstallError, match="off its own hosts"):
         await describe_github_plugin("example/moved", None, transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_describe_follows_a_relative_redirect_within_github() -> None:
+    from gateway.plugins.describe import describe_github_plugin
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.github.com" and "renamed" not in request.url.path:
+            return httpx.Response(301, headers={"location": "/repos/example/renamed/git/trees/HEAD"})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json={"tree": [{"path": "src/probe_plugin/otari-plugin.toml"}]})
+        return httpx.Response(200, text=MANIFEST)
+
+    manifest = await describe_github_plugin("example/relative", None, transport=httpx.MockTransport(handler))
+
+    assert manifest.name == "probe"
 
 
 def test_a_manifest_that_ships_a_page_must_declare_it() -> None:

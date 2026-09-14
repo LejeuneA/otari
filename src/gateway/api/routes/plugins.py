@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from gateway.api.deps import get_config, require_deployment_operator
 from gateway.core.config import GatewayConfig
 from gateway.log_config import logger
-from gateway.models.plugins import Contribution, PluginManifest, PluginManifestError
+from gateway.models.plugins import PluginManifest, PluginManifestError
 from gateway.plugins import LoadedPlugin, PluginRegistry
 from gateway.plugins.archive import (
     MAX_ARCHIVE_BYTES,
@@ -28,6 +28,7 @@ from gateway.plugins.archive import (
 )
 from gateway.plugins.describe import describe_github_plugin
 from gateway.plugins.marketplace import Marketplace, MarketplaceEntry
+from gateway.version import __version__
 
 router = APIRouter(prefix="/plugins", tags=["plugins"], dependencies=[Depends(require_deployment_operator)])
 
@@ -58,8 +59,14 @@ class PluginManifestSummary(BaseModel):
     description: str
     homepage: str | None = None
     getting_started: str | None = Field(default=None, description="A page that walks a new user through setup.")
-    contributes: list[Contribution] = Field(description="What the plugin adds; enforced when it loads.")
+    contributes: list[str] = Field(
+        description="What the plugin adds, from the closed vocabulary; enforced when it loads."
+    )
     config_keys: list[str] = Field(description="Keys the plugin reads from its own block of config.yml.")
+    needs_newer_gateway: str | None = Field(
+        default=None,
+        description="Why this gateway would refuse to load the plugin, when it would: known before install.",
+    )
 
 
 class InstalledPlugin(BaseModel):
@@ -77,7 +84,7 @@ class InstalledPlugin(BaseModel):
     )
     homepage: str | None = None
     getting_started: str | None = None
-    contributes: list[Contribution] = Field(description="What the manifest declares; what loaded is enforced to match.")
+    contributes: list[str] = Field(description="What the manifest declares; what loaded is enforced to match.")
     config_keys: list[str] = Field(default_factory=list)
     ui: PluginUiInfo | None = None
     api_prefix: str = Field(description="Where the plugin's routes mount, below the API root.")
@@ -239,6 +246,7 @@ def _summary(manifest: PluginManifest) -> PluginManifestSummary:
         getting_started=manifest.getting_started,
         contributes=list(manifest.contributes),
         config_keys=list(manifest.config_keys),
+        needs_newer_gateway=manifest.needs_newer_gateway(__version__),
     )
 
 
