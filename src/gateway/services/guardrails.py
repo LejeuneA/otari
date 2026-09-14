@@ -58,9 +58,9 @@ class GuardrailsNotReachableError(RuntimeError):
     deliberately does not. Since otari#654 that endpoint may be one an
     organization configured, which the caller was never told about and cannot
     act on, and the root ``AGENTS.md`` rule against leaking internals in a
-    public error response covers exactly that. The one message that stays whole
-    is the no-URL-configured case: it names an environment variable rather than
-    an address, and it is the only one a reader can actually act on.
+    public error response covers exactly that. No message is exempt: even the
+    unconfigured case names an environment variable this deployment runs on,
+    which is the operator's to set and not the caller's to read.
     """
 
     def __init__(self, message: str, *, public_detail: str | None = None) -> None:
@@ -301,7 +301,8 @@ async def run_input_guardrails(
                     raise GuardrailsNotReachableError(
                         f"guardrail profile {cfg.profile!r} requested but no guardrails service is "
                         "configured. Set OTARI_GUARDRAILS_URL on the gateway or pass `url` on the "
-                        "guardrail entry."
+                        "guardrail entry.",
+                        public_detail=_unevaluated_detail(cfg.profile),
                     )
                 result = await _validate_one(
                     client,

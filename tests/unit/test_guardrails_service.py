@@ -314,12 +314,18 @@ async def test_an_unreachable_endpoint_is_not_named_to_the_caller(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_the_no_url_message_survives_whole(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The one case a caller can act on names an environment variable, not an address."""
+async def test_an_unconfigured_profile_names_the_variable_only_to_the_log() -> None:
+    """The setting to change is operator knowledge, so it goes to the log and not the body.
+
+    Naming ``OTARI_GUARDRAILS_URL`` in the 502 tells a caller which environment
+    variable this deployment runs on, which is an internal they cannot act on and
+    the root ``AGENTS.md`` rule keeps out of a public error response.
+    """
     with pytest.raises(GuardrailsNotReachableError) as exc:
         await run_input_guardrails([GuardrailConfig(profile="prompt-injection", mode="block")], "x", default_url=None)
 
-    assert "OTARI_GUARDRAILS_URL" in exc.value.public_detail
+    assert "OTARI_GUARDRAILS_URL" in str(exc.value), "the log still says what to set"
+    assert exc.value.public_detail == "guardrail profile 'prompt-injection' could not be evaluated"
 
 
 def _unresolvable(monkeypatch: pytest.MonkeyPatch) -> None:
