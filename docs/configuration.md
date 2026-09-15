@@ -235,9 +235,14 @@ guardrails:
 ```
 
 `guardrail_name` is the any-guardrail class;
-`GET /api/v1/tool-settings/guardrails/catalog` lists every one this build ships,
-with the arguments each accepts. `create_kwargs` are constructor arguments,
+`GET /api/v1/tool-settings/guardrails/catalog` lists the ones that can be named
+here, with the arguments each accepts. `create_kwargs` are constructor arguments,
 `validate_kwargs` are sent on every check, and `enabled` defaults to true.
+
+Only a guardrail that is an API call can be named. One that loads model weights
+runs in the guardrails service `guardrails_url` points at instead; see
+[Guardrails](guardrails.md) for why, and for pointing a policy judge at an
+inference service of your own.
 
 The same guardrails can be managed at runtime from `/api/v1/guardrail-credentials`,
 which is what the dashboard writes. That API is standalone-only: hosted and hybrid
@@ -250,8 +255,13 @@ Secrets in a stored guardrail are encrypted with `OTARI_SECRET_KEY` and never
 returned; a read shows which ones are set, masked. Secrets in this file are not,
 so use `${VAR}` interpolation rather than writing a key into a file you commit.
 
-Entries are validated at load: an unknown class, an argument no guardrail takes,
-or a missing required one refuses startup rather than failing the first request.
+Entries are validated at load: an unknown class, a class this gateway does not
+run itself, an argument no guardrail takes, or a missing required one refuses
+startup rather than failing the first request.
+
+Every enabled guardrail, from this block and from the database both, is built at
+startup rather than on the request that first names it. One that will not build
+is logged and retried when that request arrives; it never holds up the boot.
 
 This block is the only way to define an in-process guardrail in hybrid mode,
 which keeps no local database. See [Guardrails](guardrails.md).

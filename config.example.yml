@@ -105,7 +105,9 @@ providers:
 # Guardrails this gateway builds and runs itself. The key is the name a request
 # sends as a guardrail entry's "profile". A guardrail stored through the
 # dashboard wins over an entry here of the same name. Keep secrets in the
-# environment: values here are read as written. See docs/guardrails.md.
+# environment: values here are read as written. Only an API-backed guardrail can
+# be named; one that loads model weights runs behind guardrails_url instead.
+# See docs/guardrails.md.
 # guardrails:
 #   prompt-injection:
 #     guardrail_name: lakera_guard

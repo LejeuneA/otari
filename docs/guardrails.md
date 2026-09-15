@@ -138,11 +138,31 @@ Otari can also build a guardrail and run it in its own process, with no second
 container. A guardrail defined this way is a row Otari owns rather than an entry
 in a file the guardrails service reads, so adding one takes no restart.
 
-`GET /api/v1/tool-settings/guardrails/catalog` lists every guardrail this build
-ships, with both stages of arguments: `create` for the constructor, where a
+This covers the guardrails that are an API call: Lakera, Patronus, Alinia, Azure,
+Bedrock, OpenAI moderation, watsonx, and the `any_llm` policy judge. A guardrail
+that loads model weights is not one Otari builds here; those run in the
+guardrails service above, which is what `guardrails_url` points at. The split is
+deliberate. Model weights inside the gateway process are memory the gateway never
+gets back, and serving one model to every concurrent request means serializing
+them behind it. An inference service is the right place for that work, and
+running one is your call rather than Otari's.
+
+If the model you want to judge with is your own, the `any_llm` guardrail is the
+way in: it takes a natural-language `policy` and a `model_id`, and its per-call
+arguments go straight to any-llm, so `api_base` points it at your own vLLM,
+Ollama, or indeed another Otari.
+
+`GET /api/v1/tool-settings/guardrails/catalog` lists the guardrails you can
+define here, with both stages of arguments: `create` for the constructor, where a
 vendor API key lives, and `validate` for the per-call ones. A guardrail whose
-packages are not installed reports `runnable: false` and names the extra that
-would fix it.
+vendor SDK is not installed reports `runnable: false` and names the extra that
+would fix it, which is `otari[guardrails]`.
+
+Each of these is built once, at startup, from every definition Otari finds, and
+rebuilt whenever one is written. So the first request to name a profile is not
+the one that waits for a client to be constructed. A definition that will not
+build is logged and left to its first request, never a reason the gateway fails
+to start.
 
 `POST /api/v1/guardrail-credentials` defines one. It is operator-only and
 standalone-only, so a hosted or hybrid deployment does not serve it. The name is
