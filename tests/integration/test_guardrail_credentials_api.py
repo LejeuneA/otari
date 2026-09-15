@@ -8,7 +8,9 @@ be tried once before anyone relies on it.
 
 ``AnyGuardrail`` is stubbed at the name the runner imported, as
 ``tests/unit/test_guardrail_runner.py`` does, so no test builds a guardrail or
-reaches a vendor.
+reaches a vendor. The stub is autouse, because a write rebuilds what it changed
+and startup warms what it finds, so a real constructor is reachable here without
+any test asking for one.
 """
 
 from collections.abc import Iterator
@@ -51,6 +53,11 @@ def _clean_runner() -> Iterator[None]:
 def _secret_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTARI_SECRET_KEY", generate_secret_key())
 
+
+@pytest.fixture(autouse=True)
+def _stubbed_guardrails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default stub, which a test wanting a particular failure replaces."""
+    _stub_any_guardrail(monkeypatch)
 
 
 class _Output:
@@ -415,12 +422,14 @@ def test_test_endpoint_reports_a_guardrail_that_could_not_run(
     client: TestClient, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """"It did not work, and here is why" is the answer the form asked for."""
-    assert _create(client, master_key_header).status_code == 201
 
     def _explode(_name: Any, **_kwargs: Any) -> Any:
         raise RuntimeError(f"vendor rejected key {_LAKERA_KEY}")
 
+    # Before the write, so the rebuild the write schedules fails too and the test
+    # below is not answered out of an entry that rebuild left behind.
     _stub_any_guardrail(monkeypatch, create=_explode)
+    assert _create(client, master_key_header).status_code == 201
 
     resp = client.post(
         f"{API_ROOT}/guardrail-credentials/prompt-injection/test",
@@ -468,9 +477,8 @@ def test_every_write_drops_what_the_runner_built(
 ) -> None:
     """An edited guardrail must not keep answering from its old arguments.
 
-    Eviction is also what bounds the cache: the runner drops an entry only when
-    no profile resolves to it, so a write that forgot this would hold a vendor
-    client built from arguments nobody uses.
+    Delete evicts and stops there, having nothing to rebuild. Create and patch
+    rebuild after evicting; the test below covers that half.
     """
     evicted: list[str] = []
     monkeypatch.setattr(
@@ -564,3 +572,51 @@ def test_a_guardrail_that_loads_model_weights_cannot_be_stored(
 
     assert resp.status_code == 400, resp.text
     assert "guardrails_url" in resp.json()["detail"]
+
+
+def test_a_write_rebuilds_the_profile_it_changed(
+    client: TestClient, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evicting alone would leave the profile an operator just saved as the cold one.
+
+    The rebuild runs in a background task, so the assertion is made after a later
+    request has given the loop a turn rather than immediately after the write.
+    """
+    warmed: list[str] = []
+
+    async def _warm(_self: Any, *, definition: Any, profile: str) -> None:  # noqa: ARG001
+        warmed.append(profile)
+
+    monkeypatch.setattr("gateway.services.guardrail_runner.GuardrailRunner.warm", _warm)
+
+    assert _create(client, master_key_header).status_code == 201
+    assert client.patch(
+        f"{API_ROOT}/guardrail-credentials/prompt-injection",
+        json={"enabled": False},
+        headers=master_key_header,
+    ).status_code == 200
+    # A round trip through the same loop, so the two rebuild tasks have run.
+    assert client.get(f"{API_ROOT}/guardrail-credentials", headers=master_key_header).status_code == 200
+
+    # Startup warmed the config-file guardrail; the two after it are the writes.
+    assert warmed == ["from-file", "prompt-injection", "prompt-injection"]
+
+
+def test_a_delete_evicts_without_rebuilding(
+    client: TestClient, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """There is nothing left to build, and building it would put the row back in memory."""
+    warmed: list[str] = []
+
+    async def _warm(_self: Any, *, definition: Any, profile: str) -> None:  # noqa: ARG001
+        warmed.append(profile)
+
+    monkeypatch.setattr("gateway.services.guardrail_runner.GuardrailRunner.warm", _warm)
+
+    assert _create(client, master_key_header).status_code == 201
+    assert client.delete(
+        f"{API_ROOT}/guardrail-credentials/prompt-injection", headers=master_key_header
+    ).status_code == 204
+    assert client.get(f"{API_ROOT}/guardrail-credentials", headers=master_key_header).status_code == 200
+
+    assert warmed == ["from-file", "prompt-injection"]

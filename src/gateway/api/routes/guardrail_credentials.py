@@ -17,6 +17,7 @@ Operator-gated and standalone-only (the router is not mounted in hybrid, which
 defines its guardrails in ``config.yml`` instead).
 """
 
+import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -224,20 +225,66 @@ async def _commit(db: AsyncSession, *, conflict_detail: str | None = None) -> No
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error") from None
 
 
+# Strong references to in-flight rebuilds, so a task is not collected while it is
+# still constructing. The pattern, and the reason for it, is
+# `routes/_pipeline.py`'s `_USAGE_REPORT_TASKS`.
+_REBUILD_TASKS: set[asyncio.Task[None]] = set()
+
+
 def _apply_write(name: str) -> None:
     """Make a committed guardrail change take effect on this worker.
 
     The runner caches what it builds, keyed on the arguments it was built with,
     so an edited guardrail would otherwise keep answering from the instance made
-    out of its old ones. Evicting also releases a local model the old arguments
-    had loaded, which nothing else would: the runner drops an entry only when no
-    profile resolves to it (otari#1119).
+    out of its old ones.
 
     Sibling workers keep their own instance until they restart, the same
     cross-worker gap the provider overlay has. A definition is deployment
     config, so that is the expected shape rather than a surprise.
     """
     get_guardrail_runner().evict(name)
+
+
+def _rebuild_after_write(row: GuardrailCredential) -> None:
+    """Evict, then build the written definition, so the next request finds it ready.
+
+    Startup warms every definition it finds; this is the same thing for one
+    written since. Without it a write would leave exactly the profile an operator
+    just touched as the one nobody has built.
+
+    In the background, because the answer to a save is the row and not a vendor
+    round trip, and a client that will not construct must not turn a stored write
+    into a failed response. `POST /{name}/test` is where an operator asks whether
+    a definition works.
+
+    Not used by delete, which has nothing to rebuild, nor by reencrypt, which
+    would rebuild every stored guardrail on one request; both evict alone.
+    """
+    name = row.name
+    _apply_write(name)
+    try:
+        definition = definition_from_row(row)
+    except (SecretBoxUnavailableError, SecretDecryptionError):
+        # The write is committed either way, and eviction has already happened, so
+        # the profile is merely cold rather than stale. Reading a secret back that
+        # was just written should not fail, so this is worth a line in the log.
+        logger.warning("Guardrail '%s' was written but its secrets could not be read back to rebuild it", name)
+        return
+
+    async def _rebuild() -> None:
+        await get_guardrail_runner().warm(definition=definition, profile=name)
+
+    task = asyncio.create_task(_rebuild())
+    _REBUILD_TASKS.add(task)
+
+    def _finalize(finished: asyncio.Task[None]) -> None:
+        _REBUILD_TASKS.discard(finished)
+        if finished.cancelled():
+            return
+        if (error := finished.exception()) is not None:
+            logger.warning("Guardrail '%s' was written but did not rebuild: %s", name, error)
+
+    task.add_done_callback(_finalize)
 
 
 _UNDECRYPTABLE = (
@@ -336,8 +383,8 @@ async def create_guardrail(
             "Stored guardrail '%s' shadows the config.yml guardrail of the same name; the stored entry now wins.",
             name,
         )
-    _apply_write(name)
     await db.refresh(row)
+    _rebuild_after_write(row)
     return StoredGuardrailSchema.from_model(row, shadows_config=shadows_config)
 
 
@@ -394,8 +441,8 @@ async def update_guardrail(
         ) from None
 
     await _commit(db)
-    _apply_write(name)
     await db.refresh(row)
+    _rebuild_after_write(row)
     return StoredGuardrailSchema.from_model(row, shadows_config=name in config_file_guardrails(config))
 
 
