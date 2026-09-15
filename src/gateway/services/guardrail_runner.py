@@ -30,7 +30,9 @@ Three things shape the code:
   as unavailable and the thread runs to completion regardless. A build is
   therefore *shielded*, so what it constructed is kept rather than discarded: the
   request that paid for a cold start fails, and the next one is served from the
-  registry instead of starting the same build again.
+  registry instead of starting the same build again. Startup warms every defined
+  profile (``services/guardrail_store_service.warm_guardrails``) so that request
+  is usually nobody's.
 * Every failure becomes :class:`GuardrailsNotReachableError`, so the fail-open and
   fail-closed handling in ``run_input_guardrails`` governs an in-process guardrail
   exactly as it governs a remote one, and the caller is told only the profile name.
@@ -287,6 +289,39 @@ class GuardrailRunner:
             raise GuardrailsNotReachableError(
                 f"guardrail profile {cfg.profile!r} ({name.value}) failed in-process: {type(exc).__name__}",
                 public_detail=_unevaluated_detail(cfg.profile),
+            ) from exc
+
+    async def warm(self, *, definition: GuardrailDefinition, profile: str) -> None:
+        """Build ``profile`` now, so the request that first names it is not the one that waits.
+
+        Goes through the same ``_entry`` the request path does, so it claims the
+        profile, builds at most once per key, and leaves behind the mapping
+        :meth:`evict` needs. Calling it for a profile already built does nothing.
+
+        Bounded by the same deadline a check gets. The build is shielded inside
+        ``_entry``, so a timeout here abandons the wait and not the work: what is
+        still loading stays loading, and the registry keeps it.
+
+        Raises :class:`GuardrailsNotReachableError` like :meth:`run`. Nothing is
+        retried and nothing is logged here; a caller warming many profiles decides
+        what one failure means for the rest.
+        """
+        name = _resolve_name(definition, profile)
+        try:
+            await asyncio.wait_for(self._entry(name, definition, profile), self._timeout_s)
+        except GuardrailsNotReachableError:
+            raise
+        except TimeoutError as exc:
+            raise GuardrailsNotReachableError(
+                f"guardrail profile {profile!r} ({name.value}) did not build within {self._timeout_s}s",
+                public_detail=_unevaluated_detail(profile),
+            ) from exc
+        except Exception as exc:
+            # Named and not quoted, for the reason `run` gives: a vendor SDK
+            # echoes the arguments it was handed, and those hold the key.
+            raise GuardrailsNotReachableError(
+                f"guardrail profile {profile!r} ({name.value}) failed to build: {type(exc).__name__}",
+                public_detail=_unevaluated_detail(profile),
             ) from exc
 
     def evict(self, profile_name: str) -> None:

@@ -33,6 +33,7 @@ gateway has.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Final
 
@@ -44,11 +45,13 @@ from gateway.core.config import (
     validate_guardrail_create_kwargs,
     validate_guardrail_runs_in_process,
 )
+from gateway.core.database import create_session
 from gateway.log_config import logger
 from gateway.models.entities import GuardrailCredential
 from gateway.models.secret_fields import REDACTED_VALUE, restore_redacted_values
 from gateway.services.guardrail_catalog import _specs_for_stage
-from gateway.services.guardrail_runner import GuardrailDefinition
+from gateway.services.guardrail_runner import GuardrailDefinition, get_guardrail_runner
+from gateway.services.guardrails import GuardrailsNotReachableError
 from gateway.services.secret_box import (
     SecretBoxUnavailableError,
     SecretDecryptionError,
@@ -210,6 +213,80 @@ def config_entry_is_enabled(entry: dict[str, Any]) -> bool:
     leaves the key out rather than filling it in.
     """
     return entry.get("enabled", True) is not False
+
+
+async def _defined_guardrails(config: GatewayConfig) -> dict[str, GuardrailDefinition]:
+    """Every enabled definition this deployment has, keyed by the profile it answers to.
+
+    Config entries first, then stored rows over them, because a stored guardrail
+    wins on a name collision. A hybrid gateway keeps no database, so its config
+    block is the whole of the answer and no session is opened.
+
+    A row whose secrets no longer decrypt is skipped rather than raised on: the
+    rest of the deployment's guardrails are not that row's to take down, and the
+    store already reports it as ``decryptable: false``.
+    """
+    definitions = {
+        name: definition_from_config_entry(entry)
+        for name, entry in config_file_guardrails(config).items()
+        if config_entry_is_enabled(entry)
+    }
+    if config.is_hybrid_mode:
+        return definitions
+
+    async with create_session() as db:
+        rows = await list_guardrails(db)
+    for row in rows:
+        if not row.enabled:
+            # An explicit off, so it also drops a config entry of the same name:
+            # the stored row is what that name means.
+            definitions.pop(row.name, None)
+            continue
+        try:
+            definitions[row.name] = definition_from_row(row)
+        except (SecretBoxUnavailableError, SecretDecryptionError):
+            logger.warning("Stored guardrail %r was not warmed: its secrets cannot be decrypted", row.name)
+    return definitions
+
+
+async def warm_guardrails(config: GatewayConfig) -> None:
+    """Build every defined guardrail once, at startup, instead of on a request.
+
+    Lazy building was not a preference. Until a guardrail could be written down,
+    this process could not name the profiles a deployment had, so the first
+    request to use one was the only thing that could ask for it to be built. A
+    definition is now enumerable, and the request that names a profile no longer
+    has to be the one that pays for constructing it.
+
+    Runs as a background task rather than on the boot path, so a vendor SDK slow
+    to import cannot delay the port opening, and a definition that will not build
+    cannot stop the gateway starting. Every failure is logged and left to the lazy
+    path, which still serves that profile, so this is a head start and never a
+    gate.
+    """
+    try:
+        definitions = await _defined_guardrails(config)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Reading the definitions is the one step here that can fail as a whole,
+        # and a database not ready at boot is the likely way. Logged rather than
+        # raised, so shutdown does not later report this task as having died.
+        logger.warning("Guardrails were not warmed at startup", exc_info=True)
+        return
+    if not definitions:
+        return
+
+    runner = get_guardrail_runner()
+    warmed = 0
+    for profile, definition in sorted(definitions.items()):
+        try:
+            await runner.warm(definition=definition, profile=profile)
+        except GuardrailsNotReachableError as exc:
+            logger.warning("Guardrail %r was not warmed at startup: %s", profile, exc)
+        else:
+            warmed += 1
+    logger.info("Warmed %d of %d defined guardrails", warmed, len(definitions))
 
 
 # --------------------------------------------------------------------------- #

@@ -29,6 +29,7 @@ from gateway.services.budget_reservation_ledger import run_reservation_sweeper
 from gateway.services.dashboard_session_service import revoke_sessions_on_master_key_change
 from gateway.services.file_store import build_file_store
 from gateway.services.guardrail_runner import reset_guardrail_runner
+from gateway.services.guardrail_store_service import warm_guardrails
 from gateway.services.log_writer import LogWriter, NoopLogWriter, create_log_writer
 from gateway.services.master_key_service import ensure_master_key
 from gateway.services.model_catalog_service import (
@@ -350,6 +351,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
         discovery_refresher: asyncio.Task[None] | None = None
         catalog_refresher: asyncio.Task[None] | None = None
         reservation_sweeper: asyncio.Task[None] | None = None
+        guardrail_warmer: asyncio.Task[None] | None = None
         if config.is_hybrid_mode:
             log_writer = NoopLogWriter()
         else:
@@ -464,6 +466,17 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                     )
                 )
 
+        # Outside the branch above, because a hybrid gateway builds the guardrails
+        # its config block defines through the same runner. One shot rather than a
+        # refresher: a definition changes through a write, which rebuilds what it
+        # changed, so there is nothing here to converge on a TTL.
+        #
+        # Not awaited, for the reason the discovery refresher is not: the work is a
+        # vendor SDK import and a client construction per profile, and a slow one
+        # must not hold the port closed. A profile that fails to warm is logged and
+        # still served, by the build its first request starts.
+        guardrail_warmer = asyncio.create_task(warm_guardrails(config))
+
         # Start the writer inside the try so a failure here still runs the cleanup
         # below; the refresher tasks are already created and would otherwise leak.
         log_writer_started = False
@@ -483,6 +496,7 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
                 (discovery_refresher, "model discovery"),
                 (catalog_refresher, "models.dev catalog"),
                 (reservation_sweeper, "budget reservation sweep"),
+                (guardrail_warmer, "guardrail warm"),
             ]
             await _stop_refreshers([(task, name) for task, name in refreshers if task is not None])
             if alias_refresher is not None:

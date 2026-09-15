@@ -637,12 +637,101 @@ async def test_the_shared_runner_holds_what_it_builds(monkeypatch: pytest.Monkey
     assert builds == 2
 
 
+# ---------------------------------------------------------------------------
+# Warming (``GuardrailRunner.warm``), which startup and every store write use.
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_running_refuses_a_guardrail_that_loads_model_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_warming_builds_without_evaluating(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The point of warming: pay for the build now, and call nothing."""
+    builds, calls = 0, 0
+
+    def _create(*_a: Any, **_k: Any) -> _Guardrail:
+        nonlocal builds
+        builds += 1
+        return _Guardrail()
+
+    def _evaluate(*_a: Any, **_k: Any) -> _Output:
+        nonlocal calls
+        calls += 1
+        return _Output(True)
+
+    _install(monkeypatch, create=_create, evaluate=_evaluate)
+    await GuardrailRunner().warm(definition=_definition(), profile="prompt-injection")
+
+    assert builds == 1
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_warmed_profile_is_not_built_again_by_its_first_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Otherwise warming would have bought nothing."""
+    builds = 0
+
+    def _create(*_a: Any, **_k: Any) -> _Guardrail:
+        nonlocal builds
+        builds += 1
+        return _Guardrail()
+
+    _install(monkeypatch, create=_create)
+    runner, definition = GuardrailRunner(), _definition()
+    await runner.warm(definition=definition, profile="prompt-injection")
+    await runner.run(definition=definition, cfg=_config(), input_text="hi")
+
+    assert builds == 1
+
+
+@pytest.mark.asyncio
+async def test_warming_claims_the_profile_so_a_later_write_can_evict_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A warmed profile nothing has requested must still be reachable by ``evict``."""
+    builds = 0
+
+    def _create(*_a: Any, **_k: Any) -> _Guardrail:
+        nonlocal builds
+        builds += 1
+        return _Guardrail()
+
+    _install(monkeypatch, create=_create)
+    runner, definition = GuardrailRunner(), _definition()
+    await runner.warm(definition=definition, profile="prompt-injection")
+    runner.evict("prompt-injection")
+    await runner.run(definition=definition, cfg=_config(), input_text="hi")
+
+    assert builds == 2
+
+
+@pytest.mark.asyncio
+async def test_a_build_that_fails_while_warming_is_reported_and_not_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The caller decides what one failure means; the slot must be free to retry."""
+    attempts = 0
+
+    def _create(*_a: Any, **_k: Any) -> _Guardrail:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("sk-secret was rejected")
+        return _Guardrail()
+
+    _install(monkeypatch, create=_create)
+    runner, definition = GuardrailRunner(), _definition()
+    with pytest.raises(GuardrailsNotReachableError) as caught:
+        await runner.warm(definition=definition, profile="prompt-injection")
+
+    # The type, never the vendor's text, which would carry the key back out.
+    assert "RuntimeError" in str(caught.value)
+    assert "sk-secret" not in str(caught.value)
+
+    await runner.run(definition=definition, cfg=_config(), input_text="hi")
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_warming_refuses_a_guardrail_that_loads_model_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """A row written before this gateway stopped building those is still in the database.
 
     Building it is exactly what the refusal exists to prevent, so the check is
-    made here and not only in the validators a stored row passed long ago.
+    here and not only in the validators a stored row passed long ago.
     """
     builds = 0
 
@@ -652,13 +741,21 @@ async def test_running_refuses_a_guardrail_that_loads_model_weights(monkeypatch:
         return _Guardrail()
 
     _install(monkeypatch, create=_create)
+    with pytest.raises(GuardrailsNotReachableError, match="guardrails_url"):
+        await GuardrailRunner().warm(definition=_definition(_SERIALIZED), profile="legacy")
+
+    assert builds == 0
+
+
+@pytest.mark.asyncio
+async def test_running_refuses_a_guardrail_that_loads_model_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same door, on the path a legacy row actually reaches."""
+    _install(monkeypatch)
     with pytest.raises(GuardrailsNotReachableError) as caught:
         await GuardrailRunner().run(
             definition=_definition(_SERIALIZED), cfg=_config(profile="legacy"), input_text="hi"
         )
 
-    assert builds == 0
-    assert "guardrails_url" in str(caught.value)
     # The public half still names the profile and nothing else.
     assert caught.value.public_detail is not None
     assert "deepset" not in caught.value.public_detail
