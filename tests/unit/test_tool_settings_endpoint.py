@@ -10,7 +10,7 @@ from any_guardrail.base import GuardrailName
 from fastapi.testclient import TestClient
 
 from gateway.api.routes import tool_settings
-from gateway.core.config import API_ROOT, GatewayConfig
+from gateway.core.config import API_ROOT, GatewayConfig, guardrail_runs_in_process
 from gateway.main import create_app
 
 AUTH = {"Authorization": "Bearer sk-test-master"}
@@ -303,7 +303,8 @@ def test_guardrail_catalog_lists_what_this_gateway_can_run(tmp_path: Path) -> No
 
     assert resp.status_code == 200
     guardrails = resp.json()["guardrails"]
-    assert len(guardrails) == len(GuardrailName)
+    assert len(guardrails) == len([n for n in GuardrailName if guardrail_runs_in_process(n.value)])
+    assert {row["backend"] for row in guardrails} == {"hosted_api"}
     lakera = next(row for row in guardrails if row["guardrail_name"] == "lakera_guard")
     # The create stage is what makes this worth serving: it carries the API key.
     assert any(row["name"] == "api_key" and row["secret"] for row in lakera["create_parameters"])

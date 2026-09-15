@@ -260,3 +260,40 @@ def test_a_secret_that_cannot_be_written_down_is_refused(tmp_path: Path) -> None
                 "    create_kwargs: {guardrail_identifier: gr-1, boto3_session: {region: us-east-1}}\n",
             )
         )
+
+
+def test_a_guardrail_that_loads_model_weights_is_refused(tmp_path: Path) -> None:
+    """This gateway builds hosted-API guardrails only; the rest run in the service.
+
+    Refused at load rather than at the first request, for the same reason every
+    other entry is: a definition that will never build should not wait for traffic
+    to say so. The message names the remedy, because "not supported" leaves an
+    operator with a guardrail they can see in any-guardrail and nowhere to put it.
+    """
+    with pytest.raises(ValueError, match="loads model weights"):
+        load_config(
+            _config_file(
+                tmp_path,
+                "guardrails:\n  injection:\n    guardrail_name: prompt_guard\n",
+            )
+        )
+
+
+def test_the_refusal_points_at_the_guardrails_service(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="guardrails_url"):
+        load_config(
+            _config_file(tmp_path, "guardrails:\n  judge:\n    guardrail_name: llama_guard\n"),
+        )
+
+
+def test_a_hosted_guardrail_behind_a_vendor_sdk_is_still_allowed(tmp_path: Path) -> None:
+    """The line is the backend, not whether an extra is installed here."""
+    config = load_config(
+        _config_file(
+            tmp_path,
+            "guardrails:\n  moderation:\n    guardrail_name: openai_moderation\n"
+            "    create_kwargs: {api_key: sk-1}\n",
+        )
+    )
+
+    assert config.guardrails["moderation"]["guardrail_name"] == "openai_moderation"

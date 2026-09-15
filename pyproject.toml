@@ -107,6 +107,14 @@ ocr = [
 s3 = [
     "boto3>=1.42.0",
 ]
+# The vendor SDKs behind the hosted-API guardrails Otari builds itself. Three of
+# the four (openai, boto3, ibm_watsonx_ai) already arrive transitively with
+# any-llm-sdk[all]; naming the upstream extras is what pins them to the versions
+# any-guardrail asks for, and what makes `missing_extra` in the guardrail catalog
+# a name pip accepts.
+guardrails = [
+    "any-guardrail[azure-content-safety,bedrock,openai,watsonx]>=0.7.7,<0.8.0",
+]
 
 [dependency-groups]
 dev = [

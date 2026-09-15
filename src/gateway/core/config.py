@@ -222,11 +222,11 @@ def validate_search_tool_entry(name: str, entry: Any) -> None:
         raise ValueError(msg)
 
 
-# ``any_guardrail`` is imported inside these two rather than at module scope.
+# ``any_guardrail`` is imported inside these helpers rather than at module scope.
 # Reading its registry costs ~90ms, and ``core.config`` is imported by every
 # entry point including the CLI, so a deployment with no ``guardrails:`` block
 # should not pay for a question it never asks. The registry is a stdlib+pydantic
-# leaf, so neither helper loads a model backend when it does run.
+# leaf, so none of them loads a model backend when it does run.
 @cache
 def _is_known_guardrail(guardrail_name: str) -> bool:
     """Whether ``guardrail_name`` names a guardrail this build can construct."""
@@ -237,6 +237,28 @@ def _is_known_guardrail(guardrail_name: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+@cache
+def guardrail_runs_in_process(guardrail_name: str) -> bool:
+    """Whether this gateway may build ``guardrail_name`` and run it in its own process.
+
+    Only a hosted-API guardrail may. The rest download and hold model weights,
+    and a gateway process is the wrong place for that: it is what forces the
+    resident set nothing releases (otari#1119) and the serializing worker thread
+    per entry. Otari already reaches those over HTTP instead, through the
+    any-guardrail service ``guardrails_url`` names.
+
+    Lives here, beside the other registry readers, because both callers can reach
+    ``core.config`` while neither ``services/guardrail_catalog`` nor
+    ``services/guardrail_store_service`` may be imported back into it.
+    """
+    from any_guardrail.base import GuardrailName
+    from any_guardrail.registry import GUARDRAIL_METADATA
+    from any_guardrail.types import BackendType
+
+    metadata = GUARDRAIL_METADATA.get(GuardrailName(guardrail_name))
+    return metadata is not None and metadata.backend is BackendType.HOSTED_API
 
 
 @cache
@@ -262,6 +284,28 @@ def _unstorable_secrets(guardrail_name: str) -> frozenset[str]:
     return frozenset(
         spec.name for spec in _create_stage_specs(guardrail_name) if spec.secret and spec.type.value == "json"
     )
+
+
+def validate_guardrail_runs_in_process(guardrail_name: str, where: str) -> None:
+    """Refuse a guardrail this gateway will not build and run itself.
+
+    Module-level and shared with the runtime CRUD path, exactly as
+    :func:`validate_guardrail_create_kwargs` is, so the rule and its remedy are
+    written once. ``where`` names the thing being validated.
+
+    The remedy is not "install something": a guardrail that loads weights belongs
+    behind ``guardrails_url``, in the any-guardrail service that already serves
+    ``POST /validate``, and pointing a deployment at one is a documented
+    arrangement rather than a workaround.
+    """
+    if guardrail_runs_in_process(guardrail_name):
+        return
+    msg = (
+        f"{where}.guardrail_name '{guardrail_name}' loads model weights, which this gateway does not do "
+        "in its own process. Run it in the any-guardrail service instead and set 'guardrails_url'. "
+        "GET /api/v1/tool-settings/guardrails/catalog lists the guardrails that can be defined here."
+    )
+    raise ValueError(msg)
 
 
 def validate_guardrail_create_kwargs(guardrail_name: str, kwargs: Mapping[str, Any], where: str) -> None:
@@ -339,6 +383,7 @@ def validate_guardrail_entry(name: str, entry: Any) -> None:
             "GET /api/v1/tool-settings/guardrails/catalog lists them."
         )
         raise ValueError(msg)
+    validate_guardrail_runs_in_process(guardrail_name, f"guardrails.{name}")
 
     for field in ("create_kwargs", "validate_kwargs"):
         value = entry.get(field)

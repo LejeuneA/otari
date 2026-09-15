@@ -506,11 +506,10 @@ def _create_lifespan() -> Callable[[FastAPI], Any]:
             # POST /api/v1/search dispatches on one pooled client for the process, so
             # shutdown owns closing it. A no-op when no search was ever served.
             await close_search_client()
-            # The guardrail runner holds built guardrails, which for a local one
-            # means loaded model weights. Unconditional, unlike the resets above:
-            # it is not gated on a refresher, and a hybrid gateway runs the
-            # guardrails its config block defines through the same instance. A
-            # no-op when nothing ever built one.
+            # The guardrail runner holds the vendor clients it built. Unconditional,
+            # unlike the resets above: it is not gated on a refresher, and a hybrid
+            # gateway runs the guardrails its config block defines through the same
+            # instance. A no-op when nothing ever built one.
             reset_guardrail_runner()
             # After the log writer, whose final flush is the last thing to need
             # a session. Hybrid mode never opened an engine, so this is a no-op there.

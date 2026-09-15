@@ -39,7 +39,11 @@ from typing import Any, Final
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.core.config import GatewayConfig, validate_guardrail_create_kwargs
+from gateway.core.config import (
+    GatewayConfig,
+    validate_guardrail_create_kwargs,
+    validate_guardrail_runs_in_process,
+)
 from gateway.log_config import logger
 from gateway.models.entities import GuardrailCredential
 from gateway.models.secret_fields import REDACTED_VALUE, restore_redacted_values
@@ -82,17 +86,28 @@ def _secret_names(guardrail_name: str) -> set[str]:
 
 
 def _guardrail_name(guardrail_name: str) -> Any:
-    """``guardrail_name`` as the enum member the registry is keyed by."""
+    """``guardrail_name`` as the enum member the registry is keyed by.
+
+    Also refuses one this gateway will not run itself, so a definition naming a
+    model-backed guardrail is a 400 at the route rather than a build that fails
+    the first time a request needs it.
+    """
     from any_guardrail.base import GuardrailName
 
     try:
-        return GuardrailName(guardrail_name)
+        name = GuardrailName(guardrail_name)
     except ValueError as exc:
         msg = (
             f"'{guardrail_name}' is not a guardrail this gateway ships. "
             "GET /api/v1/tool-settings/guardrails/catalog lists them."
         )
         raise GuardrailArgumentError(msg) from exc
+
+    try:
+        validate_guardrail_runs_in_process(guardrail_name, "guardrail")
+    except ValueError as exc:
+        raise GuardrailArgumentError(str(exc)) from None
+    return name
 
 
 def resolve_create_kwargs(
@@ -117,6 +132,7 @@ def resolve_create_kwargs(
     Returns ``(plain, secrets)``. Raises :class:`GuardrailArgumentError` for
     anything no guardrail could be built from.
     """
+    secret_names = _secret_names(guardrail_name)
     resolved = restore_redacted_values(submitted, stored) or {}
     still_masked = sorted(key for key, value in resolved.items() if value == REDACTED_VALUE)
     if still_masked:
@@ -131,7 +147,6 @@ def resolve_create_kwargs(
     except ValueError as exc:
         raise GuardrailArgumentError(str(exc)) from None
 
-    secret_names = _secret_names(guardrail_name)
     plain = {key: value for key, value in resolved.items() if key not in secret_names}
     secrets = {key: value for key, value in resolved.items() if key in secret_names}
     return plain, secrets

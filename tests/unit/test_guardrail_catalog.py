@@ -21,11 +21,12 @@ from any_guardrail.taxonomy import BackendType, OutputShape
 from any_guardrail.taxonomy import GuardrailCategory as UpstreamCategory
 from any_guardrail.taxonomy import GuardrailStage as UpstreamStage
 
+from gateway.core.config import guardrail_runs_in_process
 from gateway.log_config import logger as gateway_logger
 from gateway.services.guardrail_catalog import (
     _BACKEND_PACKAGES,
     _KNOWN_TYPES,
-    LOCAL_GUARDRAILS_EXTRA,
+    GUARDRAILS_EXTRA,
     BuiltInGuardrailCatalog,
     BuiltInGuardrailSpec,
     GuardrailParameterSpec,
@@ -297,10 +298,27 @@ def _clear_backend_cache() -> Iterator[None]:
     _backend_availability.cache_clear()
 
 
-def test_lists_every_guardrail_the_library_ships() -> None:
+def test_lists_every_guardrail_this_gateway_can_build() -> None:
     catalog = build_builtin_guardrail_catalog()
 
-    assert {spec.guardrail_name for spec in catalog.guardrails} == {name.value for name in GuardrailName}
+    assert {spec.guardrail_name for spec in catalog.guardrails} == {
+        name.value for name in GuardrailName if guardrail_runs_in_process(name.value)
+    }
+
+
+def test_omits_a_guardrail_that_would_load_model_weights() -> None:
+    """The form defines an in-process guardrail, and the store refuses these."""
+    catalog = build_builtin_guardrail_catalog()
+
+    names = {spec.guardrail_name for spec in catalog.guardrails}
+    assert "llama_guard" not in names
+    assert "prompt_guard" not in names
+    assert "lakera_guard" in names
+
+
+def test_every_published_guardrail_is_a_hosted_api() -> None:
+    """One line, because it is the whole rule the catalog now divides on."""
+    assert {spec.backend for spec in build_builtin_guardrail_catalog().guardrails} == {BackendType.HOSTED_API}
 
 
 def test_orders_the_catalog_for_a_picker() -> None:
@@ -413,17 +431,10 @@ def test_leaves_requirement_groups_empty_for_a_guardrail_without_one() -> None:
     assert _spec(build_builtin_guardrail_catalog(), "lakera_guard").requirement_groups == []
 
 
-def test_reports_a_second_way_to_run_the_same_guardrail() -> None:
-    """Susfactor also has a hosted path, which one runnable flag cannot express."""
-    spec = _spec(build_builtin_guardrail_catalog(), "susfactor")
-
-    assert spec.model_dump(mode="json")["alternate_backends"] == ["hosted_api"]
-
-
 def test_a_guardrail_whose_backend_is_installed_is_runnable(monkeypatch: pytest.MonkeyPatch) -> None:
     _force_probe(monkeypatch, installed=True)
 
-    spec = _spec(build_builtin_guardrail_catalog(), "llama_guard")
+    spec = _spec(build_builtin_guardrail_catalog(), "azure_content_safety")
 
     assert spec.runnable
     assert spec.missing_extra is None
@@ -432,10 +443,10 @@ def test_a_guardrail_whose_backend_is_installed_is_runnable(monkeypatch: pytest.
 def test_a_guardrail_whose_backend_is_absent_names_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     _force_probe(monkeypatch, installed=False)
 
-    spec = _spec(build_builtin_guardrail_catalog(), "llama_guard")
+    spec = _spec(build_builtin_guardrail_catalog(), "azure_content_safety")
 
     assert not spec.runnable
-    assert spec.missing_extra == LOCAL_GUARDRAILS_EXTRA
+    assert spec.missing_extra == GUARDRAILS_EXTRA
 
 
 def test_a_hosted_guardrail_needs_no_extra_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,9 +469,9 @@ def test_a_guardrail_with_no_backend_information_is_a_gap_not_a_guess(monkeypatc
     assert spec.missing_extra is None
 
 
-def test_every_guardrail_has_backend_information() -> None:
+def test_every_published_guardrail_has_backend_information() -> None:
     """A guardrail upstream adds must be given a probe, not left to the gap above."""
-    assert set(_BACKEND_PACKAGES) == set(GuardrailName)
+    assert set(_BACKEND_PACKAGES) == {name for name in GuardrailName if guardrail_runs_in_process(name.value)}
 
 
 def test_a_missing_module_is_not_installed() -> None:

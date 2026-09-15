@@ -52,6 +52,7 @@ def _secret_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OTARI_SECRET_KEY", generate_secret_key())
 
 
+
 class _Output:
     """Stand-in for ``GuardrailOutput``."""
 
@@ -468,8 +469,8 @@ def test_every_write_drops_what_the_runner_built(
     """An edited guardrail must not keep answering from its old arguments.
 
     Eviction is also what bounds the cache: the runner drops an entry only when
-    no profile resolves to it, so a write that forgot this would leak a loaded
-    model for the life of the process (otari#1119).
+    no profile resolves to it, so a write that forgot this would hold a vendor
+    client built from arguments nobody uses.
     """
     evicted: list[str] = []
     monkeypatch.setattr(
@@ -548,3 +549,18 @@ def test_a_masked_patch_still_refuses_a_row_whose_key_was_lost(
 
     assert resp.status_code == 400
     assert "OTARI_SECRET_KEY" in resp.json()["detail"]
+
+
+def test_a_guardrail_that_loads_model_weights_cannot_be_stored(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    """This gateway builds hosted-API guardrails only, so the form never offers one.
+
+    A 400 rather than a stored row that fails on its first request: the catalog
+    does not list it, so a caller sending it is asking for something no page
+    offered.
+    """
+    resp = _create(client, master_key_header, guardrail_name="prompt_guard", create_kwargs={})
+
+    assert resp.status_code == 400, resp.text
+    assert "guardrails_url" in resp.json()["detail"]

@@ -29,8 +29,22 @@ from gateway.services.guardrail_runner import (
 )
 from gateway.services.guardrails import GuardrailsNotReachableError
 
-_HOSTED = "lakera_guard"  # BackendType.HOSTED_API: concurrent calls are fine
-_LOCAL = "deepset"  # BackendType.LOCAL_ENCODER: calls are serialized per instance
+_HOSTED = "lakera_guard"  # BackendType.HOSTED_API, reached over plain `requests`
+_SDK = "azure_content_safety"  # BackendType.HOSTED_API behind a vendor SDK, so an extra can be missing
+_SERIALIZED = "deepset"  # not BackendType.HOSTED_API: calls are serialized per instance
+
+
+@pytest.fixture
+def _reclassified(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let ``_SERIALIZED`` through, as a future any-guardrail reclassifying it would.
+
+    The runner refuses a guardrail that loads model weights, and the store and the
+    catalog refuse one before it gets that far, so the serializing worker is not
+    reachable through a definition this gateway accepts today. It is kept for the
+    release that moves a backend into this process, and this is how the tests
+    below reach it.
+    """
+    monkeypatch.setattr("gateway.services.guardrail_runner.guardrail_runs_in_process", lambda _name: True)
 
 
 class _Output:
@@ -164,20 +178,20 @@ async def test_a_timeout_tells_the_caller_only_the_profile(monkeypatch: pytest.M
 
 @pytest.mark.asyncio
 async def test_a_missing_extra_names_otaris_extra_and_not_the_vendors(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Upstream's text names ``any-guardrail[huggingface]``; ours must not."""
+    """Upstream's text names ``any-guardrail[azure-content-safety]``; ours must not."""
 
     def _create(*_a: Any, **_k: Any) -> Any:
-        upstream = "Missing packages for HuggingFace provider. Try `pip install 'any-guardrail[huggingface]'`"
-        raise ImportError(upstream) from ModuleNotFoundError("torch")
+        upstream = "Missing packages for Azure. Try `pip install 'any-guardrail[azure-content-safety]'`"
+        raise ImportError(upstream) from ModuleNotFoundError("azure.ai.contentsafety")
 
     _install(monkeypatch, create=_create)
     with pytest.raises(GuardrailsNotReachableError) as caught:
-        await GuardrailRunner().run(definition=_definition(_LOCAL), cfg=_config(), input_text="hi")
+        await GuardrailRunner().run(definition=_definition(_SDK), cfg=_config(), input_text="hi")
 
     message = str(caught.value)
-    assert "guardrails-local" in message
-    assert "huggingface" not in message
-    assert "torch" not in message
+    assert "'guardrails'" in message
+    assert "azure-content-safety" not in message
+    assert "azure.ai.contentsafety" not in message
 
 
 @pytest.mark.asyncio
@@ -189,9 +203,9 @@ async def test_an_uncaused_import_error_is_not_blamed_on_a_missing_extra(monkeyp
 
     _install(monkeypatch, create=_create)
     with pytest.raises(GuardrailsNotReachableError) as caught:
-        await GuardrailRunner().run(definition=_definition(_LOCAL), cfg=_config(), input_text="hi")
+        await GuardrailRunner().run(definition=_definition(_SDK), cfg=_config(), input_text="hi")
 
-    assert "guardrails-local" not in str(caught.value)
+    assert "'guardrails'" not in str(caught.value)
 
 
 @pytest.mark.asyncio
@@ -409,9 +423,11 @@ async def test_evicting_during_a_build_serves_the_waiter_and_keeps_nothing(
 
 
 @pytest.mark.asyncio
-async def test_calls_into_one_local_model_do_not_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_calls_into_one_serialized_guardrail_do_not_overlap(
+    monkeypatch: pytest.MonkeyPatch, _reclassified: None
+) -> None:
     peak = _install_overlap_probe(monkeypatch)
-    runner, definition = GuardrailRunner(), _definition(_LOCAL, create_kwargs={})
+    runner, definition = GuardrailRunner(), _definition(_SERIALIZED, create_kwargs={})
     await asyncio.gather(*(runner.run(definition=definition, cfg=_config(), input_text="hi") for _ in range(4)))
 
     assert peak["value"] == 1
@@ -447,6 +463,7 @@ def _install_overlap_probe(monkeypatch: pytest.MonkeyPatch, seconds: float = 0.0
 @pytest.mark.asyncio
 async def test_an_abandoned_local_check_keeps_its_worker_until_the_thread_finishes(
     monkeypatch: pytest.MonkeyPatch,
+    _reclassified: None,
 ) -> None:
     """A deadline ends the wait, not the thread. The next call must still queue.
 
@@ -454,7 +471,7 @@ async def test_an_abandoned_local_check_keeps_its_worker_until_the_thread_finish
     same model object while the first is still inside it.
     """
     probe = _install_overlap_probe(monkeypatch, seconds=0.4)
-    runner, definition = GuardrailRunner(timeout_s=0.1), _definition(_LOCAL, create_kwargs={})
+    runner, definition = GuardrailRunner(timeout_s=0.1), _definition(_SERIALIZED, create_kwargs={})
 
     for _ in range(2):
         with pytest.raises(GuardrailsNotReachableError):
@@ -472,11 +489,12 @@ def _worker_threads() -> set[threading.Thread]:
 @pytest.mark.asyncio
 async def test_evicting_a_local_guardrail_lets_its_worker_thread_exit(
     monkeypatch: pytest.MonkeyPatch,
+    _reclassified: None,
 ) -> None:
     """What an executor costs that a lock did not: a thread, until the entry goes."""
     _install(monkeypatch)
     before = _worker_threads()
-    runner, definition = GuardrailRunner(), _definition(_LOCAL, create_kwargs={})
+    runner, definition = GuardrailRunner(), _definition(_SERIALIZED, create_kwargs={})
     await runner.run(definition=definition, cfg=_config(), input_text="hi")
     (worker,) = _worker_threads() - before
 
@@ -520,6 +538,7 @@ async def test_the_registry_holds_no_more_entries_than_profiles_seen(
 @pytest.mark.asyncio
 async def test_an_eviction_during_a_build_still_leaves_both_waiters_one_worker(
     monkeypatch: pytest.MonkeyPatch,
+    _reclassified: None,
 ) -> None:
     """One build makes one entry, so its worker is shared even when the registry drops it.
 
@@ -543,7 +562,7 @@ async def test_an_eviction_during_a_build_still_leaves_both_waiters_one_worker(
         return _Output(True)
 
     _install(monkeypatch, create=_create, evaluate=_evaluate)
-    runner, definition = GuardrailRunner(), _definition(_LOCAL, create_kwargs={})
+    runner, definition = GuardrailRunner(), _definition(_SERIALIZED, create_kwargs={})
 
     waiters = [
         asyncio.ensure_future(runner.run(definition=definition, cfg=_config(), input_text="hi"))
@@ -616,3 +635,30 @@ async def test_the_shared_runner_holds_what_it_builds(monkeypatch: pytest.Monkey
     get_guardrail_runner().evict("prompt-injection")
     await get_guardrail_runner().run(definition=_definition(), cfg=_config(), input_text="hi")
     assert builds == 2
+
+
+@pytest.mark.asyncio
+async def test_running_refuses_a_guardrail_that_loads_model_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A row written before this gateway stopped building those is still in the database.
+
+    Building it is exactly what the refusal exists to prevent, so the check is
+    made here and not only in the validators a stored row passed long ago.
+    """
+    builds = 0
+
+    def _create(*_a: Any, **_k: Any) -> _Guardrail:
+        nonlocal builds
+        builds += 1
+        return _Guardrail()
+
+    _install(monkeypatch, create=_create)
+    with pytest.raises(GuardrailsNotReachableError) as caught:
+        await GuardrailRunner().run(
+            definition=_definition(_SERIALIZED), cfg=_config(profile="legacy"), input_text="hi"
+        )
+
+    assert builds == 0
+    assert "guardrails_url" in str(caught.value)
+    # The public half still names the profile and nothing else.
+    assert caught.value.public_detail is not None
+    assert "deepset" not in caught.value.public_detail

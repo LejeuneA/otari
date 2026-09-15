@@ -31,18 +31,22 @@ away the page that configures guardrails.
 The built-in catalog
 --------------------
 
-Beside that sits a second, local catalog: every guardrail ``any_guardrail`` ships,
-read straight from its import-free registry. Nothing is joined and nothing is
-fetched, so there is no unavailable state to report. It carries **both** stages,
-because a guardrail this gateway constructs itself has no operator YAML fixing its
-constructor, and the create stage is where a vendor API key lives. It carries the
-one-of requirement groups beside them, because a constraint satisfied by any of
-several parameters is one no parameter's own ``required`` flag can state.
+Beside that sits a second, local catalog: the guardrails this gateway builds and
+runs itself, read straight from ``any_guardrail``'s import-free registry. Nothing
+is joined and nothing is fetched, so there is no unavailable state to report. It
+carries **both** stages, because a guardrail this gateway constructs itself has no
+operator YAML fixing its constructor, and the create stage is where a vendor API
+key lives. It carries the one-of requirement groups beside them, because a
+constraint satisfied by any of several parameters is one no parameter's own
+``required`` flag can state.
 
-Whether a guardrail can actually run here is a question about installed packages,
-not about a service. It is answered by probing for the top-level modules that
-guardrail's backend needs, never by constructing it, so listing the catalog stays
-free of ``torch`` and every other model backend.
+It is not every guardrail the library ships. A guardrail that loads model weights
+is not one this process builds, so it is not one this form may offer; those run in
+the service above, and the two catalogs divide on exactly that line.
+
+Whether one of the rest can actually run here is a question about installed
+packages, not about a service. It is answered by probing for the top-level modules
+that guardrail's backend needs, never by constructing it.
 """
 
 from __future__ import annotations
@@ -60,6 +64,7 @@ from any_guardrail.registry import GUARDRAIL_METADATA
 from any_guardrail.taxonomy import GuardrailMetadata
 from pydantic import BaseModel, ConfigDict, Field
 
+from gateway.core.config import guardrail_runs_in_process
 from gateway.log_config import logger
 from gateway.services.url_safety import redact_url_secrets
 
@@ -313,15 +318,14 @@ async def fetch_guardrail_catalog(base_url: str | None) -> GuardrailCatalog:
 
 # The one extra that carries every optional backend, so a guardrail that cannot
 # run here is always missing this single name. See `pyproject.toml`.
-LOCAL_GUARDRAILS_EXTRA = "guardrails-local"
+GUARDRAILS_EXTRA = "guardrails"
 
 # Modules that back a guardrail needing more than the base install. Probed, never
-# imported, so listing the catalog never loads torch. Read off upstream's
-# `Requires-Dist` and each guardrail module's own imports; a `GuardrailName`
-# absent from this table is reported not runnable with no extra to name, because
-# a guess about a guardrail this gateway has never seen is worse than a gap.
-_TRANSFORMERS = ("torch", "transformers")
-
+# imported. Read off upstream's `Requires-Dist` and each guardrail module's own
+# imports; a `GuardrailName` absent from this table is reported not runnable with
+# no extra to name, because a guess about a guardrail this gateway has never seen
+# is worse than a gap. Only the hosted-API guardrails are listed, because they are
+# the only ones this gateway builds (`core.config.guardrail_runs_in_process`).
 _BACKEND_PACKAGES: dict[GuardrailName, tuple[str, ...]] = {
     # Hosted APIs the base install already reaches over plain `requests`.
     GuardrailName.ALINIA: (),
@@ -329,45 +333,12 @@ _BACKEND_PACKAGES: dict[GuardrailName, tuple[str, ...]] = {
     GuardrailName.AZURE_PROMPT_SHIELDS: (),
     GuardrailName.LAKERA_GUARD: (),
     GuardrailName.PATRONUS: (),
-    # Hosted APIs behind a vendor SDK.
+    # Hosted APIs behind a vendor SDK. Three of the four arrive transitively with
+    # `any-llm-sdk[all]`; the extra is what states that rather than relying on it.
     GuardrailName.AZURE_CONTENT_SAFETY: ("azure.ai.contentsafety",),
     GuardrailName.BEDROCK_GUARDRAILS: ("boto3",),
     GuardrailName.OPENAI_MODERATION: ("openai",),
     GuardrailName.WATSONX_GUARDIAN: ("ibm_watsonx_ai",),
-    # Local encoders and decoders, all on the HuggingFace stack.
-    GuardrailName.BIELIK_GUARD: _TRANSFORMERS,
-    GuardrailName.COMPASS_JUDGER: _TRANSFORMERS,
-    GuardrailName.DEEPSET: _TRANSFORMERS,
-    GuardrailName.DUOGUARD: _TRANSFORMERS,
-    GuardrailName.DYNA_GUARD: _TRANSFORMERS,
-    GuardrailName.GLIDER: _TRANSFORMERS,
-    GuardrailName.GPT_OSS_SAFEGUARD: _TRANSFORMERS,
-    GuardrailName.GRANITE_GUARDIAN: _TRANSFORMERS,
-    GuardrailName.HARMGUARD: _TRANSFORMERS,
-    GuardrailName.INJECGUARD: _TRANSFORMERS,
-    GuardrailName.JASPER: _TRANSFORMERS,
-    GuardrailName.KANANA_SAFEGUARD: _TRANSFORMERS,
-    GuardrailName.LLAMA_GUARD: _TRANSFORMERS,
-    GuardrailName.NEMOTRON_CONTENT_SAFETY: _TRANSFORMERS,
-    GuardrailName.PANGOLIN: _TRANSFORMERS,
-    GuardrailName.POLY_GUARD: _TRANSFORMERS,
-    GuardrailName.PROMETHEUS: _TRANSFORMERS,
-    GuardrailName.PROMPT_GUARD: _TRANSFORMERS,
-    GuardrailName.PROTECTAI: _TRANSFORMERS,
-    GuardrailName.QWEN3_GUARD: _TRANSFORMERS,
-    GuardrailName.QWEN3_GUARD_STREAM: _TRANSFORMERS,
-    GuardrailName.SELENE: _TRANSFORMERS,
-    GuardrailName.SENTINEL: _TRANSFORMERS,
-    GuardrailName.SHIELD_GEMMA: _TRANSFORMERS,
-    GuardrailName.WILD_GUARD: _TRANSFORMERS,
-    GuardrailName.OFFTOPIC: (*_TRANSFORMERS, "huggingface_hub"),
-    # Runs its model through ONNX rather than torch.
-    GuardrailName.SUSFACTOR: ("onnxruntime", "transformers"),
-    # Wrappers around a third-party guardrail library.
-    GuardrailName.FLOWJUDGE: ("flow_judge",),
-    GuardrailName.GLI_GUARD: ("gliner2",),
-    GuardrailName.GLI_NER_PII: ("gliner2",),
-    GuardrailName.LETTUCE_DETECT: ("lettucedetect",),
 }
 
 
@@ -455,7 +426,7 @@ def _backend_availability(name: GuardrailName) -> tuple[bool, str | None]:
         return False, None
     if all(_installed(package) for package in packages):
         return True, None
-    return False, LOCAL_GUARDRAILS_EXTRA
+    return False, GUARDRAILS_EXTRA
 
 
 def _builtin_spec(name: GuardrailName) -> BuiltInGuardrailSpec:
@@ -473,16 +444,22 @@ def _builtin_spec(name: GuardrailName) -> BuiltInGuardrailSpec:
 
 
 def build_builtin_guardrail_catalog() -> BuiltInGuardrailCatalog:
-    """Every guardrail any-guardrail ships, typed for the form that defines one.
+    """The guardrails this gateway can build itself, typed for the form that defines one.
 
     Does no I/O and reaches no service, so unlike `fetch_guardrail_catalog` it has
     no unavailable state: the answer is a property of the installed library. Both
     parameter stages are published, because a guardrail this gateway constructs
     has no operator YAML fixing its constructor.
+
+    Not every guardrail any-guardrail ships. One that loads model weights is left
+    out, because this is the form that defines an in-process guardrail and
+    offering a choice the store then refuses would be a page that lies. The
+    guardrails service `guardrails_url` names is where those run, and
+    `fetch_guardrail_catalog` above is the catalog for it.
     """
     return BuiltInGuardrailCatalog(
         guardrails=sorted(
-            (_builtin_spec(name) for name in GuardrailName),
+            (_builtin_spec(name) for name in GuardrailName if guardrail_runs_in_process(name.value)),
             key=lambda spec: spec.display_name.casefold(),
         )
     )

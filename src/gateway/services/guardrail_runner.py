@@ -11,30 +11,29 @@ constructs the guardrail here and calls it here. Nothing routes to it yet. The
 store that supplies those arguments is otari#1111, and the request path chooses
 between this and the HTTP call in otari#1113.
 
+Only a hosted-API guardrail is built here. The rest download and hold model
+weights, and those run in the service ``guardrails_url`` names instead; a
+definition that asks for one is refused at the store and at the catalog, and
+:func:`_resolve_name` refuses it again for a row written before that was true.
+So what this module builds is a vendor client, and what it calls is an HTTP
+request wearing a synchronous signature.
+
 Three things shape the code:
 
 * ``validate`` is a plain synchronous ``def`` upstream, and so is ``create``,
-  which for a model-backed guardrail imports torch and loads weights. Both are
-  offloaded to a worker thread. Doing either on the event loop would freeze every
-  concurrent request in the process for as long as it took.
+  which imports the vendor SDK. Both are offloaded to the process-wide default
+  executor, shared with file extraction and OCR (``services/file_extractors.py``).
+  Doing either on the event loop would freeze every concurrent request in the
+  process for as long as it took. A call still queued when its deadline passes is
+  dropped rather than run, so an abandoned caller leaves no work behind.
 * A thread cannot be cancelled. When the deadline passes, the request is answered
   as unavailable and the thread runs to completion regardless. A build is
-  therefore *shielded*, so the model it loaded is kept rather than discarded: the
+  therefore *shielded*, so what it constructed is kept rather than discarded: the
   request that paid for a cold start fails, and the next one is served from the
-  registry instead of starting the same load again.
+  registry instead of starting the same build again.
 * Every failure becomes :class:`GuardrailsNotReachableError`, so the fail-open and
   fail-closed handling in ``run_input_guardrails`` governs an in-process guardrail
   exactly as it governs a remote one, and the caller is told only the profile name.
-
-A guardrail free to run concurrently is offloaded to the process-wide default
-executor, shared with file extraction and OCR (``services/file_extractors.py``).
-``web_search_backend.py`` took a pool of its own rather than pay that; an HTTP
-call does not, because it returns as fast as its upstream answers. One that is
-not free to run concurrently gets a single-threaded executor instead, and that
-one thread is what serializes it. Either way, a call still queued when its
-deadline passes is dropped rather than run, so an abandoned caller leaves no work
-behind and the worst case is the workers all busy at once rather than a growing
-backlog.
 """
 
 from __future__ import annotations
@@ -53,6 +52,7 @@ from any_guardrail.base import GuardrailName
 from any_guardrail.registry import GUARDRAIL_METADATA
 from any_guardrail.types import BackendType
 
+from gateway.core.config import guardrail_runs_in_process
 from gateway.log_config import logger
 from gateway.models.guardrails import GuardrailConfig
 from gateway.services.guardrail_catalog import _backend_availability
@@ -123,20 +123,48 @@ def _worker_for(name: GuardrailName) -> ThreadPoolExecutor | None:
     """Whether two requests may be inside this guardrail at the same time.
 
     A hosted-API guardrail is an HTTP call and is free to overlap, which is what
-    ``None`` says: it goes to the default executor with everything else. A local
-    model is one object shared by every request that reaches it, and a transformers
-    pipeline is not documented as thread safe, so those get one thread of their
-    own, which admits one call at a time. It is per entry, so a slow local model
-    neither queues an unrelated guardrail nor takes a worker the file extractors
-    are waiting for. The thread starts on the first call, not here, so a built
-    guardrail nobody calls costs none, and it exits once the entry holding it is
-    dropped: shutting it down on eviction instead would take it out from under a
-    caller who is still inside the guardrail.
+    ``None`` says: it goes to the default executor with everything else. Since
+    nothing else is built here, that is the answer every entry gets today. The
+    other branch is kept because ``backend`` is upstream's to set under the
+    ``>=0.7.7,<0.8.0`` floor, and a guardrail reclassified into this process must
+    not arrive with every request free to call one model object at once. Such an
+    entry gets one thread of its own, and that thread is what admits one call at a
+    time. It starts on the first call, not here, and exits once the entry holding
+    it is dropped: shutting it down on eviction instead would take it out from
+    under a caller who is still inside the guardrail.
     """
     metadata = GUARDRAIL_METADATA.get(name)
     if metadata is not None and metadata.backend is BackendType.HOSTED_API:
         return None
     return ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"guardrail-{name.value}")
+
+
+def _resolve_name(definition: GuardrailDefinition, profile: str) -> GuardrailName:
+    """The enum member to build, or the one error every caller here reports.
+
+    Two refusals, both of which a validated definition has already passed: a name
+    no build ships, and a guardrail that loads model weights. The second is
+    checked here rather than trusted from validation alone, because a row written
+    before this gateway stopped building those is still in the database, and
+    building it would load the weights the refusal exists to keep out. It fails
+    closed like any other guardrail failure, and the message names the service to
+    run it in instead.
+    """
+    try:
+        name = GuardrailName(definition.guardrail_name)
+    except ValueError as exc:
+        raise GuardrailsNotReachableError(
+            f"guardrail profile {profile!r} names an unknown guardrail {definition.guardrail_name!r}",
+            public_detail=_unevaluated_detail(profile),
+        ) from exc
+
+    if not guardrail_runs_in_process(definition.guardrail_name):
+        raise GuardrailsNotReachableError(
+            f"guardrail profile {profile!r} ({name.value}) loads model weights and is not run in this "
+            "process; run it in the any-guardrail service and set 'guardrails_url'",
+            public_detail=_unevaluated_detail(profile),
+        )
+    return name
 
 
 async def _build(name: GuardrailName, definition: GuardrailDefinition) -> _Entry:
@@ -148,7 +176,7 @@ async def _build(name: GuardrailName, definition: GuardrailDefinition) -> _Entry
     the registry ended up keeping it.
 
     Only the construction goes to a thread: it imports the guardrail's module and,
-    for a local model, loads weights.
+    for one behind a vendor SDK, that SDK.
     """
     guardrail = await asyncio.to_thread(AnyGuardrail.create, name, **definition.create_kwargs)
     return _Entry(guardrail=guardrail, worker=_worker_for(name))
@@ -211,9 +239,8 @@ class GuardrailRunner:
         # No capacity limit, because the deployment already is one: a key reaches
         # `_entries` only after some profile claimed it, and `_forget` drops it as
         # soon as none does, so this holds at most one entry per profile the
-        # operator has defined. What that does not bound is size, since each entry
-        # may be a loaded model, and nothing here releases one that has gone quiet.
-        # Capping resident models is otari#1119.
+        # operator has defined. An entry is a vendor client rather than a loaded
+        # model, so the bound on count is a bound on size too.
         self._entries: dict[_RegistryKey, asyncio.Task[_Entry]] = {}
         self._keys: dict[str, _RegistryKey] = {}
 
@@ -231,14 +258,7 @@ class GuardrailRunner:
         for the log and names the profile, the guardrail and the failure's type;
         ``public_detail`` names the profile and nothing else.
         """
-        try:
-            name = GuardrailName(definition.guardrail_name)
-        except ValueError as exc:
-            raise GuardrailsNotReachableError(
-                f"guardrail profile {cfg.profile!r} names an unknown guardrail "
-                f"{definition.guardrail_name!r}",
-                public_detail=_unevaluated_detail(cfg.profile),
-            ) from exc
+        name = _resolve_name(definition, cfg.profile)
 
         try:
             return await asyncio.wait_for(self._check(name, definition, cfg, input_text), self._timeout_s)
@@ -395,10 +415,10 @@ class GuardrailRunner:
 
 # The one runner the process uses, and the one a store write must reach to evict
 # a profile it changed. Created on first use rather than at import, because the
-# class holds `asyncio` locks and tasks that bind to the loop that first touches
-# them: an instance built at import would outlive a lifespan restart and fail
-# from inside asyncio under the next loop. The same shape, and the same reason,
-# as the pooled client in `services/search_backend.py`.
+# class holds `asyncio` tasks that bind to the loop that first touches them: an
+# instance built at import would outlive a lifespan restart and fail from inside
+# asyncio under the next loop. The same shape, and the same reason, as the pooled
+# client in `services/search_backend.py`.
 _runner: GuardrailRunner | None = None
 
 
@@ -414,9 +434,9 @@ def get_guardrail_runner() -> GuardrailRunner:
 def reset_guardrail_runner() -> None:
     """Drop the runner and everything it has built (shutdown, tests).
 
-    Whatever models it holds become unreachable and are collected; nothing is
-    unloaded explicitly, because upstream offers no way to. A no-op when nothing
-    ever built one, which is every hybrid deployment until otari#1113.
+    The vendor clients it holds become unreachable and are collected; none is
+    closed explicitly, because upstream offers no way to. A no-op when nothing
+    ever built one.
     """
     global _runner  # noqa: PLW0603
 
