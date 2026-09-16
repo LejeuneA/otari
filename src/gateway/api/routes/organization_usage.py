@@ -82,6 +82,7 @@ from gateway.api.routes.usage import (
     _usage_filters,
 )
 from gateway.core.sql import MAX_FILTER_VALUES
+from gateway.core.surface import DeploymentKind, Surface
 from gateway.models.entities import APIKey, UsageLog, User
 from gateway.models.tenancy import User as TenancyUser
 from gateway.models.tenancy import Workspace
@@ -100,6 +101,9 @@ router = APIRouter(
     # deployment operator gate does not belong here.
     dependencies=[Depends(verify_master_key)],
 )
+
+# Hosted only. On standalone the organization is the whole deployment, so the `usage` surface already answers for it.
+SURFACE = Surface("organization_usage", deployments=frozenset({DeploymentKind.HOSTED}))
 
 
 async def _scope_condition(

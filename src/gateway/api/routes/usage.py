@@ -27,6 +27,7 @@ from gateway.core.sql import (
     match_any,
     utc_bound,
 )
+from gateway.core.surface import Surface
 from gateway.core.usage_source import is_served_here, not_served_here
 from gateway.inflight import get_registry
 from gateway.models.entities import APIKey, UsageLog, User
@@ -66,6 +67,8 @@ ingest_router = APIRouter(
     tags=["usage"],
     dependencies=[Depends(verify_api_key_or_master_key)],
 )
+
+SURFACE = Surface("usage")
 
 # The analytics summary is range-bounded, unlike the raw list. Absent a start_date
 # it looks back this far; a wider explicit window is clamped to the hard cap so a

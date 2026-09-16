@@ -61,6 +61,7 @@ from gateway.api.deps import (
 )
 from gateway.api.routes.chat import ChatCompletionRequest, run_chat_completion
 from gateway.core.config import GatewayConfig
+from gateway.core.surface import DeploymentKind, Surface
 from gateway.models.playground import (
     PlaygroundComparisonCreate,
     PlaygroundComparisonsPublic,
@@ -87,6 +88,10 @@ router = APIRouter(
     # whoever signed in, not only for the operator.
     dependencies=[Depends(verify_master_key)],
 )
+
+# Standalone only. The page reads a management session and dispatches a
+# completion, and a hosted control plane serves no inference (#822).
+SURFACE = Surface("playground", deployments=frozenset({DeploymentKind.STANDALONE}))
 
 _CONVERSATION_NOT_FOUND = "Conversation not found"
 _COMPARISON_NOT_FOUND = "Comparison not found"

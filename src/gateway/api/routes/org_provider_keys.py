@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api.deps import CurrentIdentity, get_db, verify_master_key
 from gateway.api.routes.organizations import Message
+from gateway.core.surface import DeploymentKind, Surface
 from gateway.models.provider_keys import (
     OrgProviderKeyCreateRequest,
     OrgProviderKeyPublic,
@@ -46,6 +47,10 @@ workspace_router = APIRouter(
     tags=["provider-keys"],
     dependencies=[Depends(verify_master_key)],
 )
+
+# Hosted only. It replaces the process-wide `providers` surface with each organization's own keys.
+# It is not the `organizations` surface, because the roster is a different page with different access.
+SURFACE = Surface("organization_providers", deployments=frozenset({DeploymentKind.HOSTED}))
 
 
 def get_org_provider_key_service(db: Annotated[AsyncSession, Depends(get_db)]) -> OrgProviderKeyService:

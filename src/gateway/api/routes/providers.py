@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api.deps import get_config, get_db, require_deployment_operator
 from gateway.core.config import PROVIDER_TYPE_ALIASES, RESERVED_PROVIDER_INSTANCE_NAMES, GatewayConfig
+from gateway.core.surface import DeploymentKind, Surface
 from gateway.log_config import logger
 from gateway.models.entities import ProviderCredential
 from gateway.services.model_discovery_service import (
@@ -57,6 +58,11 @@ router = APIRouter(
     tags=["providers"],
     dependencies=[Depends(require_deployment_operator)],
 )
+
+# Standalone only. A credential stored here serves every organization on the
+# deployment and shadows each one's own key for that provider.
+# Leaving the page off a hosted deployment does not guard the table; #818 tracks that.
+SURFACE = Surface("providers", deployments=frozenset({DeploymentKind.STANDALONE}))
 
 
 class ProviderCapabilitiesSchema(BaseModel):

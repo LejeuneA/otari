@@ -15,6 +15,7 @@ from gateway.api.deps import (
     verify_catalog_reader,
 )
 from gateway.core.config import GatewayConfig
+from gateway.core.surface import Surface
 from gateway.models.entities import APIKey, ModelPricing
 from gateway.models.tenancy import User as TenancyUser
 from gateway.services.merged_catalog_service import (
@@ -65,6 +66,8 @@ catalog_router = APIRouter(
     tags=["models"],
     dependencies=[Depends(verify_catalog_reader)],
 )
+
+SURFACE = Surface("models")
 
 
 class ModelListResponse(BaseModel):

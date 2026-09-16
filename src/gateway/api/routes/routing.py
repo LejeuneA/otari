@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.api.deps import get_config, get_db, require_deployment_operator
 from gateway.api.routes._helpers import resolve_managed_workspace_id
 from gateway.core.config import GatewayConfig
+from gateway.core.surface import Surface
 from gateway.log_config import logger
 from gateway.models.entities import RoutingPolicy
 from gateway.models.routing import PolicySpec
@@ -53,6 +54,8 @@ router = APIRouter(
     tags=["routing"],
     dependencies=[Depends(require_deployment_operator)],
 )
+
+SURFACE = Surface("routing")
 
 
 class PolicyRequest(BaseModel):
