@@ -6,6 +6,13 @@ configured provider. The ``/api/v1/provider-credentials`` endpoints manage the
 dashboard, encrypted at rest and merged over config.yml providers. Every route
 here describes or changes the gateway's own configuration, so the router is
 operator-gated; standalone-mode only (it is not mounted in hybrid).
+
+The ``/api/v1/providers/catalog`` reads are the exception, on their own router
+below, the same split ``models.py`` and ``pricing.py`` use: they describe the
+any-llm registry rather than this deployment, so the add-provider picker on the
+organization-scoped provider-keys page (``org_provider_keys.py``, open to an
+organization owner/admin, not only a deployment operator) needs them too. See
+``api/deps.verify_catalog_reader`` for why the reads are open at all.
 """
 
 import asyncio
@@ -17,7 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api.deps import get_config, get_db, require_deployment_operator
+from gateway.api.deps import get_config, get_db, require_deployment_operator, verify_catalog_reader
 from gateway.core.config import PROVIDER_TYPE_ALIASES, RESERVED_PROVIDER_INSTANCE_NAMES, GatewayConfig
 from gateway.log_config import logger
 from gateway.models.entities import ProviderCredential
@@ -56,6 +63,10 @@ from gateway.services.url_safety import UnsafeURLError, validate_provider_api_ba
 router = APIRouter(
     tags=["providers"],
     dependencies=[Depends(require_deployment_operator)],
+)
+catalog_router = APIRouter(
+    tags=["providers"],
+    dependencies=[Depends(verify_catalog_reader)],
 )
 
 
@@ -169,7 +180,7 @@ def _to_known_schema(provider: KnownProvider) -> KnownProviderSchema:
     )
 
 
-@router.get("/providers/catalog")
+@catalog_router.get("/providers/catalog")
 async def provider_catalog() -> list[KnownProviderSummarySchema]:
     """List every known provider for the add-provider picker: id and name only.
 
@@ -181,7 +192,7 @@ async def provider_catalog() -> list[KnownProviderSummarySchema]:
     return [_to_summary_schema(summary) for summary in list_known_provider_summaries()]
 
 
-@router.get("/providers/catalog/{provider_id}")
+@catalog_router.get("/providers/catalog/{provider_id}")
 async def provider_catalog_detail(provider_id: str) -> KnownProviderSchema:
     """Autofill hints for one provider the add-provider form has selected.
 

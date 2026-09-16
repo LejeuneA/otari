@@ -5,15 +5,20 @@ storing a key requires OTARI_SECRET_KEY, updates are optimistic, and every route
 is master-key gated.
 """
 
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from sqlmodel import col
 
 from gateway.api.routes import providers as providers_route
 from gateway.core.config import API_ROOT
-from gateway.models.entities import ProviderCredential
+from gateway.models.entities import DashboardSession, ProviderCredential
+from gateway.models.tenancy import Organization, OrganizationMember, User
+from gateway.services.dashboard_session_service import SESSION_COOKIE_NAME, hash_session_token
 from gateway.services.model_discovery_service import ProviderDiscovery
 from gateway.services.provider_store_service import reset_provider_cache
 from gateway.services.secret_box import decrypt_secret, generate_secret_key
@@ -424,6 +429,77 @@ def test_catalog_detail_unknown_provider_is_404(client: TestClient, master_key_h
 
 def test_catalog_detail_requires_master_key(client: TestClient) -> None:
     assert client.get(f"{API_ROOT}/providers/catalog/openai").status_code in (401, 403)
+
+
+def _default_organization_id(session_factory: Callable[[], Session]) -> uuid.UUID:
+    session = session_factory()
+    try:
+        organization = session.query(Organization).filter(col(Organization.slug) == "default").one()
+        return organization.id
+    finally:
+        session.close()
+
+
+def _member_session(
+    session_factory: Callable[[], Session], *, organization_id: uuid.UUID, email: str, role: str
+) -> str:
+    """A live dashboard session cookie for an organization member who is not a superuser."""
+    session = session_factory()
+    try:
+        user = User(email=email, full_name=email.split("@")[0].title(), active_organization_id=organization_id)
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        session.add(OrganizationMember(organization_id=organization_id, user_id=user.id, role=role, status="active"))
+        token = f"otari-sess-{email}"
+        session.add(
+            DashboardSession(
+                token_hash=hash_session_token(token),
+                user_id=user.id,
+                created_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(hours=12),
+            )
+        )
+        session.commit()
+        return token
+    finally:
+        session.close()
+
+
+def test_catalog_reads_admit_an_organization_owner_who_is_not_a_deployment_operator(
+    client: TestClient,
+    master_key_header: dict[str, str],
+    db_session_factory: Callable[[], Session],
+) -> None:
+    """The add-provider picker's catalog needs no operator authority (otari#…).
+
+    `/providers/catalog` and its detail route feed `ProviderComboBox` on the
+    organization-scoped provider-keys page (`org_provider_keys.py`), which
+    `require_active_organization_management_access` already opens to an
+    organization owner or admin. Gating the picker's own catalog reads behind
+    `require_deployment_operator` left that caller unable to populate the
+    dropdown, and therefore unable to add a key at all, even though they were
+    never asking for deployment-wide authority.
+    """
+    assert client.get(f"{API_ROOT}/organizations/me", headers=master_key_header).status_code == 200
+    organization_id = _default_organization_id(db_session_factory)
+    token = _member_session(
+        db_session_factory, organization_id=organization_id, email="owner@example.com", role="owner"
+    )
+
+    client.cookies.set(SESSION_COOKIE_NAME, token)
+    try:
+        listing = client.get(f"{API_ROOT}/providers/catalog")
+        detail = client.get(f"{API_ROOT}/providers/catalog/openai")
+        # The deployment-wide surface stays refused for the same identity.
+        credentials = client.get(f"{API_ROOT}/provider-credentials")
+    finally:
+        client.cookies.clear()
+
+    assert listing.status_code == 200, listing.text
+    assert any(p["id"] == "openai" for p in listing.json())
+    assert detail.status_code == 200, detail.text
+    assert credentials.status_code == 403, credentials.text
 
 
 def test_all_routes_require_master_key(client: TestClient) -> None:
