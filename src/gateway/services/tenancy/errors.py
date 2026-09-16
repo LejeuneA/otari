@@ -1080,7 +1080,7 @@ class WorkspaceWebSearchDomainsExcludedError(TenancyForbiddenError):
     The two lists are intersected rather than overridden, so this is the empty
     intersection: every domain the request asked for is one the workspace does
     not permit. Refused rather than run, because an empty effective allow-list
-    is read by ``_build_web_search_backend`` as *no* allow-list (an empty list
+    is read by ``_build_web_retrieval_backend`` as *no* allow-list (an empty list
     is falsy), which would turn the narrowest possible policy into no policy at
     all.
     """

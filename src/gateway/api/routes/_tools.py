@@ -491,21 +491,3 @@ def _build_web_retrieval_backend(
     kwargs["counter"] = counter
 
     return WebRetrievalBackend(**kwargs)
-
-
-def _build_web_search_backend(
-    *,
-    base_url: str | None,
-    tool_entry: dict[str, Any],
-    auth_token: str | None = None,
-    config: GatewayConfig | None = None,
-    tally: ToolUsageTally | None = None,
-) -> WebRetrievalBackend:
-    """Compatibility wrapper for Search-only callers and tests."""
-    return _build_web_retrieval_backend(
-        base_url=base_url,
-        search_tool_entry=tool_entry,
-        auth_token=auth_token,
-        config=config,
-        tally=tally,
-    )

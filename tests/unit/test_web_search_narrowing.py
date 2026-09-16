@@ -186,7 +186,7 @@ def test_an_allow_list_applies_whole_to_a_request_that_named_none() -> None:
 def test_a_disjoint_allow_list_is_refused_rather_than_emptied() -> None:
     """An empty allow-list reads as *no* allow-list downstream, so it cannot be the answer.
 
-    `_build_web_search_backend` applies the field only when it is truthy, so
+    `_build_web_retrieval_backend` applies the field only when it is truthy, so
     narrowing to `[]` would turn the narrowest possible policy into none at all.
     """
     entry: dict[str, object] = {"type": "otari_web_search", "allowed_domains": ["elsewhere.example"]}

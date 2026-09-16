@@ -334,7 +334,7 @@ def narrow_web_search_tool_entry(
     :func:`_intersect` for what overlapping means when the entries are domain
     suffixes rather than hosts). The
     alternative is an empty effective allow-list, which
-    ``_build_web_search_backend`` reads as *no* allow-list because an empty list
+    ``_build_web_retrieval_backend`` reads as *no* allow-list because an empty list
     is falsy, and that turns the narrowest possible policy into no policy at
     all. Refusing also tells the caller something a silent zero-result search
     would not.
