@@ -416,11 +416,11 @@ async def require_deployment_operator(
     later inherits the gate instead of being reachable with no credential at
     all until someone notices the missing decorator. ``Depends`` caching means
     the master-key verification underneath still runs once per request however
-    many of these a route pulls in. The three modules that hold an exception
-    (``models.py`` and ``pricing.py`` for the catalog reads, ``usage.py`` for
-    external-event ingestion) put it on a router of its own, so admitting a
-    non-operator is spelled at a router instead of hidden in one route's
-    decorator.
+    many of these a route pulls in. The modules that hold an exception
+    (``models.py``, ``pricing.py``, and ``providers.py`` for the catalog reads,
+    ``tool_settings.py`` for its reader split, ``usage.py`` for external-event
+    ingestion) put it on a router of its own, so admitting a non-operator is
+    spelled at a router instead of hidden in one route's decorator.
     """
     if session_identity is not None and not await DeploymentUserService(db).has_administration_access(
         session_identity
