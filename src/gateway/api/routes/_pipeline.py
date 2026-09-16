@@ -468,7 +468,11 @@ _UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument '([^']+)'")
 # either: the two definitions of "settable by a caller" are one definition, and
 # spelling it twice is how they drift.
 _FORWARDED_PARAMS: frozenset[str] = frozenset(
-    (set(CompletionParams.model_fields) | set(MessagesParams.model_fields) | set(ResponsesParams.model_fields))
+    (
+        set(CompletionParams.model_fields)
+        | set(MessagesParams.model_fields)
+        | set(ResponsesParams.model_fields)
+    )
     - SENSITIVE_PARAM_FIELDS
 )
 
@@ -2206,12 +2210,10 @@ class ToolContext:
         # request shares one tally across attempts: every executed call was paid
         # for, whether or not its attempt won.
         self.tally = ToolUsageTally()
-        # One budget per request, for the reason the tally is: a multi-attempt
-        # request re-runs its searches on the attempt that serves, and every one of
-        # them is billed, so the cap has to be spent by the request rather than
-        # refilled per attempt.
+        # Successful Search calls spend the caller's cap across all routing attempts.
         cap = self.max_web_search_uses
         self.web_search_budget = WebSearchBudget(cap) if cap is not None else None
+        # Search and Fetch share a separate attempted-call cap across routing attempts.
         self.web_retrieval_counter = WebRetrievalCounter()
 
     def build_sandbox_backend(self) -> SandboxBackend:
@@ -2730,7 +2732,9 @@ async def prepare_gateway_tools(
             await _validate_mcp_server_urls(adapter, mcp_servers)
         if mcp_server_ids:
             stored_servers = await _resolve_mcp_server_ids(adapter, ctx, mcp_server_ids)
-            await _validate_mcp_server_urls(adapter, stored_servers, stored=True, workspace_id=ctx.workspace_id)
+            await _validate_mcp_server_urls(
+                adapter, stored_servers, stored=True, workspace_id=ctx.workspace_id
+            )
             stored_name_counts = Counter(server.name for server in stored_servers)
             # Standalone cannot reach this: `uq_workspace_mcp_servers_workspace_name`
             # makes stored names unique per workspace and `resolve_workspace_mcp_servers`

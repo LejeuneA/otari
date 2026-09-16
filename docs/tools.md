@@ -53,8 +53,9 @@ here, so a float that happens to be whole is rejected too.
 Past the cap, the model is told the search was refused and can answer without it.
 An Anthropic-native declaration is answered in its own vocabulary, a
 `web_search_tool_result` carrying `error_code: max_uses_exceeded`; every other
-caller gets the same `[tool error]` string a failed tool produces. A request
-without `max_uses` is bounded only by `max_tool_iterations`.
+caller gets the same `[tool error]` string a failed tool produces. Even without
+`max_uses`, requests remain bounded by `max_tool_iterations` and the shared
+[10-call Search and Fetch limit](#web-fetch).
 
 ### Who may read the settings
 
@@ -173,8 +174,13 @@ limits.
 
 Search and Fetch share a limit of 10 attempted calls per request across model
 turns and routing attempts. Invalid, blocked, and failed calls consume that
-allowance. Successful Fetch calls are billed under `otari:web_fetch`; failures
-return sanitized tool errors, are counted as errors, and are not billed.
+allowance. Attempting an eleventh call aborts the tool loop rather than returning
+a `[tool error]` for the model to recover from. Non-streaming requests return
+HTTP `422`; a response that is already streaming emits an error event and ends
+without a completed answer.
+
+Successful Fetch calls are billed under `otari:web_fetch`; ordinary Fetch
+failures return sanitized tool errors, are counted as errors, and are not billed.
 
 Declaring Fetch authorizes the model to make arbitrary public GET requests
 within the workspace domain policy. Fetched content can contain prompt
