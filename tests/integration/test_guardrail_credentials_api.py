@@ -7,14 +7,17 @@ held to what the catalog says its guardrail accepts, and an editor that echoes
 the mask back keeps the key it was never shown.
 """
 
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+from any_guardrail import AnyGuardrail
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
 from gateway.core.config import API_ROOT, GatewayConfig
+from gateway.services.guardrail_runner import get_guardrail_runner, reset_guardrail_runner
 from gateway.services.secret_box import generate_secret_key
 
 _LAKERA_KEY = "lak-live-notreal-9876"
@@ -37,6 +40,35 @@ def test_config(postgres_url: str) -> GatewayConfig:
 def _secret_key(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("OTARI_SECRET_KEY", generate_secret_key())
     yield
+
+
+@pytest.fixture(autouse=True)
+def builds(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Every write builds what it stored, so nothing here may reach a real vendor client.
+
+    Autouse rather than asked for: a test that only meant to store a row would
+    otherwise construct one, which this file has never done.
+    """
+    seen: list[str] = []
+
+    def _create(name: Any, **kwargs: Any) -> object:
+        seen.append(name.value)
+        return object()
+
+    monkeypatch.setattr(AnyGuardrail, "create", _create)
+    reset_guardrail_runner()
+    yield seen
+    reset_guardrail_runner()
+
+
+def _built(runner_knows: Callable[[], bool]) -> bool:
+    """Wait for a rebuild, which the route deliberately does not wait for itself."""
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if runner_knows():
+            return True
+        time.sleep(0.05)
+    return runner_knows()
 
 
 def _create(client: TestClient, headers: dict[str, str], **body: Any) -> Any:
@@ -425,3 +457,71 @@ def test_a_guardrail_with_no_credential_stores_fine(
     assert resp.status_code == 201, resp.text
     assert resp.json()["create_secrets"] == {}
     assert resp.json()["validate_kwargs"] == {"policy": "no medical advice"}
+
+
+def test_a_created_guardrail_is_built_without_waiting_for_a_request(
+    client: TestClient, master_key_header: dict[str, str], builds: list[str]
+) -> None:
+    """Startup builds every definition; a write is the same thing for one made since."""
+    assert _create(client, master_key_header).status_code == 201
+
+    assert _built(lambda: get_guardrail_runner().knows("prompt-injection"))
+    assert builds == ["lakera_guard"]
+
+
+def test_a_patch_builds_the_definition_it_wrote(
+    client: TestClient, master_key_header: dict[str, str], builds: list[str]
+) -> None:
+    """Otherwise an edited profile would keep answering from its old arguments."""
+    assert _create(client, master_key_header).status_code == 201
+    assert _built(lambda: get_guardrail_runner().knows("prompt-injection"))
+
+    resp = client.patch(
+        f"{API_ROOT}/guardrail-credentials/prompt-injection",
+        json={"create_kwargs": {"api_key": "lak-rotated", "endpoint": _ENDPOINT}},
+        headers=master_key_header,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert _built(lambda: len(builds) == 2)
+
+
+def test_a_definition_that_will_not_build_still_stores(
+    client: TestClient, master_key_header: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer to a save is the row. A vendor client is not part of that answer."""
+
+    def _refuse(name: Any, **kwargs: Any) -> object:
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(AnyGuardrail, "create", _refuse)
+
+    resp = _create(client, master_key_header)
+
+    assert resp.status_code == 201, resp.text
+    assert not get_guardrail_runner().knows("prompt-injection")
+
+
+def test_deleting_a_guardrail_forgets_what_was_built(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    assert _create(client, master_key_header).status_code == 201
+    assert _built(lambda: get_guardrail_runner().knows("prompt-injection"))
+
+    resp = client.delete(f"{API_ROOT}/guardrail-credentials/prompt-injection", headers=master_key_header)
+
+    assert resp.status_code == 204
+    assert not get_guardrail_runner().knows("prompt-injection")
+
+
+def test_re_encryption_builds_nothing(
+    client: TestClient, master_key_header: dict[str, str], builds: list[str]
+) -> None:
+    """It rotates ciphertext and changes no argument, so what is built is still right."""
+    assert _create(client, master_key_header).status_code == 201
+    assert _built(lambda: get_guardrail_runner().knows("prompt-injection"))
+
+    resp = client.post(f"{API_ROOT}/guardrail-credentials/reencrypt", headers=master_key_header)
+
+    assert resp.json() == {"reencrypted": 1, "unreadable": 0}
+    assert builds == ["lakera_guard"]
