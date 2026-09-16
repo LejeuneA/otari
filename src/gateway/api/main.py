@@ -203,6 +203,7 @@ def _register_core_routers(api: APIRouter, config: GatewayConfig, enabled_featur
         # there with the 404 that names the data plane.
         api.include_router(playground.router)
     api.include_router(providers.router)
+    api.include_router(providers.credentials_router)
     # The add-provider picker's catalog reads, open to any catalog reader (an
     # organization owner/admin adding an org-scoped key included), not only a
     # deployment operator. See providers.py's module docstring.

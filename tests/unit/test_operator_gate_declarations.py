@@ -67,6 +67,7 @@ _DEPLOYMENT_WIDE_ROUTERS: list[tuple[str, APIRouter]] = [
     ("models", models.operator_router),
     ("pricing", pricing.operator_router),
     ("providers", providers.router),
+    ("providers.credentials", providers.credentials_router),
     ("routing", routing.router),
     ("routing_memory", routing_memory.router),
     ("scoped_budgets", scoped_budgets.router),

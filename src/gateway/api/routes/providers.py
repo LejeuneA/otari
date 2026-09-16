@@ -1,18 +1,20 @@
 """Provider metadata and runtime provider-credential management for the dashboard.
 
 The ``/api/v1/providers`` endpoint reports static, network-free metadata for every
-configured provider. The ``/api/v1/provider-credentials`` endpoints manage the
-``provider_credentials`` table: providers an operator adds at runtime through the
-dashboard, encrypted at rest and merged over config.yml providers. Every route
-here describes or changes the gateway's own configuration, so the router is
-operator-gated; standalone-mode only (it is not mounted in hybrid).
+configured provider. The ``/api/v1/provider-credentials`` endpoints, on their own
+``credentials_router`` below, manage the ``provider_credentials`` table: providers
+an operator adds at runtime through the dashboard, encrypted at rest and merged
+over config.yml providers. Every route in this module describes or changes the
+gateway's own configuration, so both routers are operator-gated; standalone-mode
+only (neither is mounted in hybrid).
 
-The ``/api/v1/providers/catalog`` reads are the exception, on their own router
-below, the same split ``models.py`` and ``pricing.py`` use: they describe the
-any-llm registry rather than this deployment, so the add-provider picker on the
-organization-scoped provider-keys page (``org_provider_keys.py``, open to an
-organization owner/admin, not only a deployment operator) needs them too. See
-``api/deps.verify_catalog_reader`` for why the reads are open at all.
+The ``/api/v1/providers/catalog`` reads are the exception, on their own
+``catalog_router`` below, the same split ``models.py`` and ``pricing.py`` use:
+they describe the any-llm registry rather than this deployment, so the
+add-provider picker on the organization-scoped provider-keys page
+(``org_provider_keys.py``, open to an organization owner/admin, not only a
+deployment operator) needs them too. See ``api/deps.verify_catalog_reader`` for
+why the reads are open at all.
 """
 
 import asyncio
@@ -61,12 +63,19 @@ from gateway.services.secret_box import (
 from gateway.services.url_safety import UnsafeURLError, validate_provider_api_base
 
 router = APIRouter(
+    prefix="/providers",
     tags=["providers"],
     dependencies=[Depends(require_deployment_operator)],
 )
 catalog_router = APIRouter(
+    prefix="/providers/catalog",
     tags=["providers"],
     dependencies=[Depends(verify_catalog_reader)],
+)
+credentials_router = APIRouter(
+    prefix="/provider-credentials",
+    tags=["providers"],
+    dependencies=[Depends(require_deployment_operator)],
 )
 
 
@@ -131,7 +140,7 @@ def _to_schema(info: ProviderInfo) -> ProviderInfoSchema:
     )
 
 
-@router.get("/providers")
+@router.get("")
 async def list_providers(
     config: Annotated[GatewayConfig, Depends(get_config)],
 ) -> ProvidersResponse:
@@ -180,7 +189,7 @@ def _to_known_schema(provider: KnownProvider) -> KnownProviderSchema:
     )
 
 
-@catalog_router.get("/providers/catalog")
+@catalog_router.get("")
 async def provider_catalog(
     limit: Annotated[
         int, Query(ge=1, le=500, description="Maximum number of providers to return.")
@@ -204,7 +213,7 @@ async def provider_catalog(
     return [_to_summary_schema(summary) for summary in summaries[:limit]]
 
 
-@catalog_router.get("/providers/catalog/{provider_id}")
+@catalog_router.get("/{provider_id}")
 async def provider_catalog_detail(provider_id: str) -> KnownProviderSchema:
     """Autofill hints for one provider the add-provider form has selected.
 
@@ -278,7 +287,7 @@ def _to_health_schema(health: ProviderHealth) -> ProviderHealthSchema:
     )
 
 
-@router.get("/providers/health")
+@router.get("/health")
 async def provider_health(
     config: Annotated[GatewayConfig, Depends(get_config)],
     refresh: bool = False,
@@ -487,7 +496,7 @@ async def _apply_write(db: AsyncSession, config: GatewayConfig, instance: str) -
         logger.warning("Provider overlay refresh failed after writing '%s'; converges within TTL", instance)
 
 
-@router.post("/provider-credentials/test")
+@credentials_router.post("/test")
 async def test_provider_connection(
     request: TestProviderRequest,
     config: Annotated[GatewayConfig, Depends(get_config)],
@@ -524,7 +533,7 @@ async def test_provider_connection(
     )
 
 
-@router.post("/provider-credentials/reencrypt")
+@credentials_router.post("/reencrypt")
 async def reencrypt_stored_provider_keys(
     db: Annotated[AsyncSession, Depends(get_db)],
     config: Annotated[GatewayConfig, Depends(get_config)],
@@ -553,7 +562,7 @@ async def reencrypt_stored_provider_keys(
     return ReencryptProviderCredentialsResponse(reencrypted=reencrypted, unreadable=unreadable)
 
 
-@router.get("/provider-credentials")
+@credentials_router.get("")
 async def list_stored_providers(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[StoredProviderResponse]:
@@ -563,7 +572,7 @@ async def list_stored_providers(
     ]
 
 
-@router.post("/provider-credentials", status_code=status.HTTP_201_CREATED)
+@credentials_router.post("", status_code=status.HTTP_201_CREATED)
 async def create_stored_provider(
     request: CreateStoredProviderRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -603,7 +612,7 @@ async def create_stored_provider(
     return StoredProviderResponse.from_model(row)
 
 
-@router.patch("/provider-credentials/{instance}")
+@credentials_router.patch("/{instance}")
 async def update_stored_provider(
     instance: str,
     request: UpdateStoredProviderRequest,
@@ -649,7 +658,7 @@ async def update_stored_provider(
     return StoredProviderResponse.from_model(row)
 
 
-@router.delete("/provider-credentials/{instance}", status_code=status.HTTP_204_NO_CONTENT)
+@credentials_router.delete("/{instance}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_stored_provider(
     instance: str,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -665,7 +674,7 @@ async def delete_stored_provider(
     await _apply_write(db, config, instance)
 
 
-@router.post("/provider-credentials/{instance}/test")
+@credentials_router.post("/{instance}/test")
 async def test_stored_provider(
     instance: str,
     db: Annotated[AsyncSession, Depends(get_db)],
