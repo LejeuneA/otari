@@ -76,6 +76,16 @@ def test_a_guardrail_that_would_load_model_weights_is_refused() -> None:
         validate_guardrail_kwargs("llama_guard", create_kwargs={}, validate_kwargs={})
 
 
+def test_a_guardrail_whose_hosted_path_needs_a_live_object_is_refused() -> None:
+    """``susfactor`` names a hosted alternate that a stored definition cannot select.
+
+    Reaching it means passing a ``provider=`` object, which is not an argument
+    upstream publishes, so what this would build is the local encoder.
+    """
+    with pytest.raises(UnknownGuardrailError):
+        validate_guardrail_kwargs("susfactor", create_kwargs={}, validate_kwargs={})
+
+
 def test_an_argument_the_guardrail_does_not_take_is_refused() -> None:
     """No guardrail accepts ``**kwargs``, so this would fail when it was built."""
     with pytest.raises(UnknownGuardrailParameterError, match="no create argument"):
