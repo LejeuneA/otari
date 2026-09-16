@@ -64,10 +64,15 @@ class UnstorableGuardrailParameterError(GuardrailCredentialError):
 
 
 class MissingGuardrailParameterError(GuardrailCredentialError):
-    """A required argument was not supplied and nothing else can supply it."""
+    """A required argument was not supplied and nothing else can supply it.
+
+    ``requirement`` is a whole sentence rather than a name, because a one-of
+    constraint has no single name to give: it comes from the catalog's
+    requirement group, whose wording is upstream's own.
+    """
 
     def __init__(self, guardrail_name: str, requirement: str) -> None:
-        super().__init__(f"'{guardrail_name}' needs {requirement}.")
+        super().__init__(f"'{guardrail_name}' cannot be stored: {requirement}")
 
 
 class GuardrailCredentialNotFoundError(GuardrailCredentialError):
