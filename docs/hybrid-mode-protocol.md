@@ -342,11 +342,19 @@ request.
 }
 ```
 
-Otari requires `enabled` to be a boolean and `authorized_tools` to be a list of
-strings. Every requested tool must be explicitly authorized; in particular, a
-legacy response that omits `authorized_tools` never permits Fetch. Recognized
-domain-list fields must be lists of valid strings. A malformed recognized field
-fails closed with `502` instead of being coerced.
+Otari requires `enabled` to be a boolean. When `authorized_tools` is absent,
+Otari treats the response as legacy Search-only authorization, equivalent to
+`["web_search"]`. This lets an upgraded gateway continue serving Search against
+an older platform. `enabled: false` still denies access with `403`.
+
+When present, `authorized_tools` must be a list of strings. An explicit `null`
+or another malformed value fails closed with `502`; an empty list authorizes
+no tools. Every requested tool must be in the effective authorization list or
+the request fails with `403`. Fetch always requires an explicit `"web_fetch"`
+entry, so a legacy response denies Fetch-only and combined Search/Fetch requests.
+
+Recognized domain-list fields must be lists of valid strings. A malformed
+recognized field fails closed with `502` instead of being coerced.
 
 For Search, `max_results`, `allowed_domains`, `blocked_domains`, and
 `purpose_hint` remain workspace defaults where the request supplies no value;

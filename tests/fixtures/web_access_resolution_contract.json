@@ -63,7 +63,55 @@
         "enabled": true
       },
       "expected_requested_tools": ["web_fetch"],
+      "expected_status": 403
+    },
+    {
+      "name": "legacy_response_search_only",
+      "tools": [{"type": "otari_web_search"}],
+      "platform_response": {
+        "enabled": true,
+        "allowed_domains": ["example.com"]
+      },
+      "expected_requested_tools": ["web_search"],
+      "expected_status": 200
+    },
+    {
+      "name": "legacy_response_search_disabled",
+      "tools": [{"type": "otari_web_search"}],
+      "platform_response": {
+        "enabled": false
+      },
+      "expected_requested_tools": ["web_search"],
+      "expected_status": 403
+    },
+    {
+      "name": "legacy_response_combined",
+      "tools": [{"type": "otari_web_search"}, {"type": "otari_web_fetch"}],
+      "platform_response": {
+        "enabled": true
+      },
+      "expected_requested_tools": ["web_search", "web_fetch"],
+      "expected_status": 403
+    },
+    {
+      "name": "null_authorization_search",
+      "tools": [{"type": "otari_web_search"}],
+      "platform_response": {
+        "enabled": true,
+        "authorized_tools": null
+      },
+      "expected_requested_tools": ["web_search"],
       "expected_status": 502
+    },
+    {
+      "name": "empty_authorization_search",
+      "tools": [{"type": "otari_web_search"}],
+      "platform_response": {
+        "enabled": true,
+        "authorized_tools": []
+      },
+      "expected_requested_tools": ["web_search"],
+      "expected_status": 403
     }
   ]
 }

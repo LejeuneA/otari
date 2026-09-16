@@ -2644,7 +2644,8 @@ def _combined_fetch_policy(
 def _validated_hybrid_web_policy(payload: dict[str, Any]) -> tuple[bool, set[str], DomainPolicy]:
     """Strictly validate the authorization fields supplied by the control plane."""
     enabled = payload.get("enabled")
-    authorized = payload.get("authorized_tools")
+    # Legacy platforms authorize Search only; an explicit null remains malformed.
+    authorized = payload.get("authorized_tools", [WEB_SEARCH_TOOL_NAME])
     if not isinstance(enabled, bool):
         raise ValueError("enabled must be a boolean")
     if not isinstance(authorized, list) or any(not isinstance(value, str) for value in authorized):
