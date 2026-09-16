@@ -168,10 +168,10 @@ export function WorkspaceWebSearchCard({ docsHref }: { docsHref: string }) {
         <div className="px-4 py-3">
           <InfoBanner>
             This deployment has no in-loop search backend configured, so
-            otari_web_search is unavailable here. otari_web_fetch remains
-            available subject to this workspace policy. Blocking still takes
-            effect on POST /api/v1/search, which runs off the search tools
-            below.
+            otari_web_search is unavailable here. otari_web_fetch is available
+            only if this deployment has enabled it and this workspace policy
+            allows it. Blocking still takes effect on POST /api/v1/search, which
+            runs off the search tools below.
           </InfoBanner>
         </div>
       ) : null}

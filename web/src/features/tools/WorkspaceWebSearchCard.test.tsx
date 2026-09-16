@@ -302,7 +302,7 @@ describe("WorkspaceWebSearchCard", () => {
     expect(calls.some((call) => call.method === "DELETE")).toBe(false)
   })
 
-  it("says Search is unavailable without a backend while Fetch remains policy-gated", async () => {
+  it("says Fetch requires deployment enablement and workspace permission when Search is unavailable", async () => {
     mockApi({
       config: workspaceWebSearchConfig({
         workspace_id: ALPHA,
@@ -313,13 +313,13 @@ describe("WorkspaceWebSearchCard", () => {
     })
     renderCard()
 
-    // The capability ceiling is about the in-loop backend only. The workspace
-    // policy still gates Fetch and POST /api/v1/search.
     expect(
       await screen.findByText(/no in-loop search backend configured/i),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/otari_web_fetch remains available/i),
+      screen.getByText(
+        /otari_web_fetch is available only if this deployment has enabled it and this workspace policy allows it/i,
+      ),
     ).toBeInTheDocument()
     expect(
       screen.getByText(/still takes effect on POST \/api\/v1\/search/i),
