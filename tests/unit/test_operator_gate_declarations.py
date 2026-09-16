@@ -87,6 +87,7 @@ _NON_OPERATOR_ROUTERS: list[tuple[str, APIRouter, Callable[..., Any]]] = [
     ("catalog", catalog.router, verify_catalog_reader_or_public),
     ("models.catalog", models.catalog_router, verify_catalog_reader),
     ("pricing.catalog", pricing.catalog_router, verify_catalog_reader),
+    ("providers.catalog", providers.catalog_router, verify_catalog_reader),
     ("tool_settings.reader", tool_settings.reader_router, verify_master_key),
     ("tools", tools.router, verify_catalog_reader),
     ("usage.ingest", usage.ingest_router, verify_api_key_or_master_key),

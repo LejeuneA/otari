@@ -483,14 +483,15 @@ async def verify_catalog_reader(
     """As :func:`verify_api_key_or_master_key`, and a dashboard session also reads.
 
     The narrow exception to the rule above, for the catalog reads that describe
-    the deployment rather than act on it: ``GET /api/v1/models``, ``GET /api/v1/pricing``
-    and ``GET /api/v1/tools`` (with their by-id variants). The dashboard's Models and
-    Pricing pages are built on these, so a session has to reach them; they call
-    no provider, write nothing, and bill nothing, so reaching them
-    deployment-wide costs a signed-in caller's own organization nothing.
+    the deployment rather than act on it: ``GET /api/v1/models``, ``GET /api/v1/pricing``,
+    ``GET /api/v1/tools``, and ``GET /api/v1/providers/catalog`` (with their by-id
+    variants). The dashboard's Models, Pricing, and add-provider pages are built on
+    these, so a session has to reach them; they call no provider, write nothing, and
+    bill nothing, so reaching them deployment-wide costs a signed-in caller's own
+    organization nothing.
 
     Split out rather than left as a branch inside the other dependency so that
-    adding a route to this plane defaults to refusing the cookie. The three
+    adding a route to this plane defaults to refusing the cookie. The four
     routers that serve these reads declare it on the router for the same reason,
     so admitting a session is spelled where the route is mounted rather than in
     one route's decorator.

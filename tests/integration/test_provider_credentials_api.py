@@ -22,6 +22,7 @@ from gateway.services.dashboard_session_service import SESSION_COOKIE_NAME, hash
 from gateway.services.model_discovery_service import ProviderDiscovery
 from gateway.services.provider_store_service import reset_provider_cache
 from gateway.services.secret_box import decrypt_secret, generate_secret_key
+from gateway.services.tenancy.provisioning_service import DEFAULT_ORGANIZATION_SLUG
 
 
 @pytest.fixture(autouse=True)
@@ -432,10 +433,10 @@ def test_catalog_detail_requires_master_key(client: TestClient) -> None:
 
 
 def _default_organization_id(session_factory: Callable[[], Session]) -> uuid.UUID:
-    """The bootstrap tenancy root's id, seeded by the migration chain under the "default" slug."""
+    """The bootstrap tenancy root's id, seeded by the migration chain under DEFAULT_ORGANIZATION_SLUG."""
     session = session_factory()
     try:
-        organization = session.query(Organization).filter(col(Organization.slug) == "default").one()
+        organization = session.query(Organization).filter(col(Organization.slug) == DEFAULT_ORGANIZATION_SLUG).one()
         return organization.id
     finally:
         session.close()
@@ -469,7 +470,6 @@ def _member_session(
 
 def test_catalog_reads_admit_an_organization_owner_who_is_not_a_deployment_operator(
     client: TestClient,
-    master_key_header: dict[str, str],
     db_session_factory: Callable[[], Session],
 ) -> None:
     """The add-provider picker's catalog needs no operator authority (otari#…).
@@ -482,7 +482,6 @@ def test_catalog_reads_admit_an_organization_owner_who_is_not_a_deployment_opera
     dropdown, and therefore unable to add a key at all, even though they were
     never asking for deployment-wide authority.
     """
-    assert client.get(f"{API_ROOT}/organizations/me", headers=master_key_header).status_code == 200
     organization_id = _default_organization_id(db_session_factory)
     token = _member_session(
         db_session_factory, organization_id=organization_id, email="owner@example.com", role="owner"

@@ -21,7 +21,7 @@ import asyncio
 from typing import Annotated, Any
 
 from any_llm import LLMProvider
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -190,27 +190,15 @@ def _to_known_schema(provider: KnownProvider) -> KnownProviderSchema:
 
 
 @catalog_router.get("")
-async def provider_catalog(
-    limit: Annotated[
-        int, Query(ge=1, le=500, description="Maximum number of providers to return.")
-    ] = 500,
-) -> list[KnownProviderSummarySchema]:
+async def provider_catalog() -> list[KnownProviderSummarySchema]:
     """List every known provider for the add-provider picker: id and name only.
 
     Lightweight by design so the picker never lags: provider ids come from the
     any-llm registry and names from the bundled genai-prices dataset, so no
     provider SDK is imported. The autofill hints for a chosen provider come from
     GET /api/v1/providers/catalog/{provider_id}, which imports only that one SDK.
-
-    ``limit`` is a ceiling rather than a page size: the registry any-llm
-    exposes (`AnyLLM.get_supported_providers()`) is a small, curated set fixed
-    by that dependency's own pinned version (52 today), not tenant data that
-    grows unbounded, so the default comfortably covers it. It exists so a
-    future any-llm bump cannot make this response unbounded, not to page
-    today's list; the picker's own search box is how a caller narrows it.
     """
-    summaries = list_known_provider_summaries()
-    return [_to_summary_schema(summary) for summary in summaries[:limit]]
+    return [_to_summary_schema(summary) for summary in list_known_provider_summaries()]
 
 
 @catalog_router.get("/{provider_id}")

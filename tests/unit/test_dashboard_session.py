@@ -410,7 +410,7 @@ def test_the_cookie_does_not_authenticate_the_request_plane(tmp_path: Path) -> N
 
 
 def test_the_cookie_still_reads_the_catalog(tmp_path: Path) -> None:
-    """The exception that keeps the dashboard's Models and Pricing pages working.
+    """The exception that keeps the dashboard's Models, Pricing, and add-provider pages working.
 
     These describe the deployment instead of acting on it: no provider call, no
     write, no billing, so ``verify_catalog_reader`` admits the cookie where the
@@ -423,6 +423,7 @@ def test_the_cookie_still_reads_the_catalog(tmp_path: Path) -> None:
         assert client.get(f"{API_ROOT}/models").status_code == 200
         assert client.get(f"{API_ROOT}/pricing").status_code == 200
         assert client.get(f"{API_ROOT}/tools").status_code == 200
+        assert client.get(f"{API_ROOT}/providers/catalog").status_code == 200
 
 
 def test_the_request_plane_still_refuses_anonymous_and_cross_site_callers(tmp_path: Path) -> None:

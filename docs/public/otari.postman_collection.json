@@ -6253,7 +6253,7 @@
         {
           "name": "Provider Catalog",
           "request": {
-            "description": "List every known provider for the add-provider picker: id and name only.\n\nLightweight by design so the picker never lags: provider ids come from the\nany-llm registry and names from the bundled genai-prices dataset, so no\nprovider SDK is imported. The autofill hints for a chosen provider come from\nGET /api/v1/providers/catalog/{provider_id}, which imports only that one SDK.\n\n``limit`` is a ceiling rather than a page size: the registry any-llm\nexposes (`AnyLLM.get_supported_providers()`) is a small, curated set fixed\nby that dependency's own pinned version (52 today), not tenant data that\ngrows unbounded, so the default comfortably covers it. It exists so a\nfuture any-llm bump cannot make this response unbounded, not to page\ntoday's list; the picker's own search box is how a caller narrows it.",
+            "description": "List every known provider for the add-provider picker: id and name only.\n\nLightweight by design so the picker never lags: provider ids come from the\nany-llm registry and names from the bundled genai-prices dataset, so no\nprovider SDK is imported. The autofill hints for a chosen provider come from\nGET /api/v1/providers/catalog/{provider_id}, which imports only that one SDK.",
             "header": [],
             "method": "GET",
             "url": {
@@ -6266,15 +6266,7 @@
                 "providers",
                 "catalog"
               ],
-              "query": [
-                {
-                  "description": "Maximum number of providers to return.",
-                  "disabled": true,
-                  "key": "limit",
-                  "value": ""
-                }
-              ],
-              "raw": "{{baseUrl}}/api/v1/providers/catalog?limit="
+              "raw": "{{baseUrl}}/api/v1/providers/catalog"
             }
           }
         },
