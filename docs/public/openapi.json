@@ -27743,8 +27743,24 @@
     },
     "/api/v1/providers/catalog": {
       "get": {
-        "description": "List every known provider for the add-provider picker: id and name only.\n\nLightweight by design so the picker never lags: provider ids come from the\nany-llm registry and names from the bundled genai-prices dataset, so no\nprovider SDK is imported. The autofill hints for a chosen provider come from\nGET /api/v1/providers/catalog/{provider_id}, which imports only that one SDK.",
+        "description": "List every known provider for the add-provider picker: id and name only.\n\nLightweight by design so the picker never lags: provider ids come from the\nany-llm registry and names from the bundled genai-prices dataset, so no\nprovider SDK is imported. The autofill hints for a chosen provider come from\nGET /api/v1/providers/catalog/{provider_id}, which imports only that one SDK.\n\n``limit`` is a ceiling rather than a page size: the registry any-llm\nexposes (`AnyLLM.get_supported_providers()`) is a small, curated set fixed\nby that dependency's own pinned version (52 today), not tenant data that\ngrows unbounded, so the default comfortably covers it. It exists so a\nfuture any-llm bump cannot make this response unbounded, not to page\ntoday's list; the picker's own search box is how a caller narrows it.",
         "operationId": "providers-provider_catalog",
+        "parameters": [
+          {
+            "description": "Maximum number of providers to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "description": "Maximum number of providers to return.",
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -27759,6 +27775,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [

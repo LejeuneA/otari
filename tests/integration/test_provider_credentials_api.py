@@ -432,6 +432,7 @@ def test_catalog_detail_requires_master_key(client: TestClient) -> None:
 
 
 def _default_organization_id(session_factory: Callable[[], Session]) -> uuid.UUID:
+    """The bootstrap tenancy root's id, seeded by the migration chain under the "default" slug."""
     session = session_factory()
     try:
         organization = session.query(Organization).filter(col(Organization.slug) == "default").one()
