@@ -25,12 +25,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.agent_runtime.domain.evaluators import (
     evaluate_changed_path,
+    evaluate_command_if_changed,
     evaluate_command_match,
     tokenize_commands,
     tokenize_phrases,
 )
 from gateway.agent_runtime.domain.policy import MAX_POLICY_BYTES, PolicyError, parse_policy
-from gateway.agent_runtime.domain.types import ChangedPathEvidence, ChangedPathGate, CommandEvidence, CommandMatchGate
+from gateway.agent_runtime.domain.types import (
+    ChangedPathEvidence,
+    ChangedPathGate,
+    CommandEvidence,
+    CommandIfChangedGate,
+    CommandMatchGate,
+    GateResult,
+    GateSpec,
+)
 from gateway.api.deps import get_config, get_db_if_needed, verify_api_key_or_master_key
 from gateway.api.routes._platform import _extract_platform_user_token
 from gateway.core.config import GatewayConfig
@@ -224,6 +233,23 @@ class PolicyCheckResponse(BaseModel):
     blocked: bool
 
 
+def _evaluate_gate(
+    gate: GateSpec,
+    changed_path_evidence: ChangedPathEvidence | None,
+    command_evidence: CommandEvidence | None,
+    segment_cache: dict[str, list[list[str]]] | None,
+    phrase_cache: dict[str, list[str]] | None,
+) -> GateResult:
+    """Dispatch one gate to its evaluator. Extend as a new gate type joins ``GateSpec``."""
+    if isinstance(gate, ChangedPathGate):
+        return evaluate_changed_path(gate, changed_path_evidence)
+    if isinstance(gate, CommandMatchGate):
+        return evaluate_command_match(gate, command_evidence, segment_cache=segment_cache, phrase_cache=phrase_cache)
+    return evaluate_command_if_changed(
+        gate, changed_path_evidence, command_evidence, segment_cache=segment_cache, phrase_cache=phrase_cache
+    )
+
+
 @router.post("/check")
 async def check_policy(request: PolicyCheckRequest) -> PolicyCheckResponse:
     """Evaluate a submitted policy against submitted evidence.
@@ -244,21 +270,26 @@ async def check_policy(request: PolicyCheckRequest) -> PolicyCheckResponse:
             raise HTTPException(status_code=422, detail=f"changed_paths entry exceeds {_MAX_PATH_LENGTH} characters.")
     for command in request.commands or []:
         if len(command) > _MAX_COMMAND_LENGTH:
-            raise HTTPException(
-                status_code=422, detail=f"commands entry exceeds {_MAX_COMMAND_LENGTH} characters."
-            )
+            raise HTTPException(status_code=422, detail=f"commands entry exceeds {_MAX_COMMAND_LENGTH} characters.")
 
     changed_path_gates = [gate for gate in spec.gates if isinstance(gate, ChangedPathGate)]
     command_match_gates = [gate for gate in spec.gates if isinstance(gate, CommandMatchGate)]
+    command_if_changed_gates = [gate for gate in spec.gates if isinstance(gate, CommandIfChangedGate)]
 
-    # Built once and reused below: gate.forbidden is already deduplicated at
-    # parse time (domain.policy), and changed_path_evidence/command_evidence
-    # deduplicate their evidence lists the same way, so each estimate and its
-    # matching evaluation below always agree on the same, cheaper counts.
+    # Built once and reused below: gate.forbidden/when_changed/require are
+    # already deduplicated at parse time (domain.policy), and
+    # changed_path_evidence/command_evidence deduplicate their evidence lists
+    # the same way, so each estimate and its matching evaluation below always
+    # agree on the same, cheaper counts. command_if_changed's when_changed
+    # globs are path-matching work exactly like changed_path's forbidden
+    # globs, so they share the same budget rather than needing a third one.
     changed_path_evidence = request.changed_path_evidence
     changed_paths = changed_path_evidence.changed_paths if changed_path_evidence is not None else ()
-    pattern_count = sum(len(gate.forbidden) for gate in changed_path_gates)
-    total_pattern_length = sum(len(glob) for gate in changed_path_gates for glob in gate.forbidden)
+    path_globs = [glob for gate in changed_path_gates for glob in gate.forbidden] + [
+        glob for gate in command_if_changed_gates for glob in gate.when_changed
+    ]
+    pattern_count = len(path_globs)
+    total_pattern_length = sum(len(glob) for glob in path_globs)
     path_count = len(changed_paths)
     total_path_length = sum(len(path) for path in changed_paths)
     estimated_work = pattern_count * total_path_length + path_count * total_pattern_length
@@ -275,16 +306,17 @@ async def check_policy(request: PolicyCheckRequest) -> PolicyCheckResponse:
         )
 
     command_evidence = request.command_evidence
-    # Gated on there being a command_match gate at all: tokenizing a command
-    # is exactly the cost _MAX_TOTAL_COMMAND_CHARS below exists to bound. A
-    # policy with none (every policy shipped before this gate type existed)
-    # must not pay that cost just to prove there is nothing to bound it
-    # against. Also gated on evidence actually being present: `commands`
-    # omitted from the request means command_evidence is None, and there is
-    # nothing to tokenize or bound in that case either.
+    # Gated on there being a gate that reads command evidence at all:
+    # tokenizing a command is exactly the cost _MAX_TOTAL_COMMAND_CHARS below
+    # exists to bound. A policy with neither command_match nor
+    # command_if_changed (every policy shipped before this gate type
+    # existed) must not pay that cost just to prove there is nothing to
+    # bound it against. Also gated on evidence actually being present:
+    # `commands` omitted from the request means command_evidence is None,
+    # and there is nothing to tokenize or bound in that case either.
     segment_cache: dict[str, list[list[str]]] | None = None
     phrase_cache: dict[str, list[str]] | None = None
-    if command_match_gates and command_evidence is not None:
+    if (command_match_gates or command_if_changed_gates) and command_evidence is not None:
         total_command_chars = sum(len(command) for command in command_evidence.commands)
         if total_command_chars > _MAX_TOTAL_COMMAND_CHARS:
             raise HTTPException(
@@ -297,36 +329,43 @@ async def check_policy(request: PolicyCheckRequest) -> PolicyCheckResponse:
 
         # Tokenized exactly once here and reused for both the estimate below
         # and the real evaluation further down (passed to every
-        # evaluate_command_match call as segment_cache): evaluate_command_match
-        # is called once per command_match gate against this same evidence,
-        # and without sharing this, each call would re-tokenize every command
-        # from scratch, multiplying the already-checked cost above by the
-        # number of gates. A request with 100 command_match gates each
-        # forbidding "npm" against 250 distinct ~4,000-character commands
-        # passed every budget here (low token content, few phrases, under
-        # _MAX_TOTAL_COMMAND_CHARS) yet measured ~7s of synchronous blocking
-        # from exactly that multiplication before this was shared.
+        # evaluate_command_match/evaluate_command_if_changed call as
+        # segment_cache): each is called once per gate against this same
+        # evidence, and without sharing this, each call would re-tokenize
+        # every command from scratch, multiplying the already-checked cost
+        # above by the number of gates. A request with 100 command_match
+        # gates each forbidding "npm" against 250 distinct ~4,000-character
+        # commands passed every budget here (low token content, few phrases,
+        # under _MAX_TOTAL_COMMAND_CHARS) yet measured ~7s of synchronous
+        # blocking from exactly that multiplication before this was shared.
         segment_cache = tokenize_commands(command_evidence.commands)
 
-        # Policy parsing already proved every forbidden phrase tokenizes
-        # (domain.policy's own validation), so this cannot raise. Shared with
-        # the evaluation below via phrase_cache for the same reason
-        # segment_cache is: tokenized here for the estimate and then again
-        # inside every evaluate_command_match call is the same work twice.
-        phrase_cache = tokenize_phrases(
-            tuple(phrase for gate in command_match_gates for phrase in gate.forbidden)
+        # Policy parsing already proved every forbidden/require phrase
+        # tokenizes (domain.policy's own validation), so this cannot raise.
+        # Shared with the evaluation below via phrase_cache for the same
+        # reason segment_cache is: tokenized here for the estimate and then
+        # again inside every evaluate_command_match/evaluate_command_if_changed
+        # call is the same work twice. command_if_changed's require phrases
+        # are command-matching work exactly like command_match's forbidden
+        # phrases, so they share the same budget and cache rather than
+        # needing a third one.
+        command_phrases = tuple(phrase for gate in command_match_gates for phrase in gate.forbidden) + tuple(
+            phrase for gate in command_if_changed_gates for phrase in gate.require
         )
-        phrase_count = sum(len(gate.forbidden) for gate in command_match_gates)
+        phrase_cache = tokenize_phrases(command_phrases)
         # Per gate occurrence, not per distinct phrase text: phrase_cache
         # dedupes identical phrase text across gates so each is tokenized
-        # once, but evaluate_command_match still runs _contains_subsequence
-        # for every gate that carries it. Summing len(phrase_cache.values())
-        # counted a shared phrase's tokens once regardless of how many gates
-        # forbid it, undercounting the real per-gate matching work whenever
-        # gates share phrase text.
+        # once, but evaluate_command_match/evaluate_command_if_changed still
+        # run _contains_subsequence once per gate that carries it. Summing
+        # len(phrase_cache.values()) counted a shared phrase's tokens once
+        # regardless of how many gates forbid/require it, undercounting the
+        # real per-gate matching work whenever gates share phrase text.
+        phrase_count = sum(len(gate.forbidden) for gate in command_match_gates) + sum(
+            len(gate.require) for gate in command_if_changed_gates
+        )
         total_phrase_tokens = sum(
             len(phrase_cache[phrase]) for gate in command_match_gates for phrase in gate.forbidden
-        )
+        ) + sum(len(phrase_cache[phrase]) for gate in command_if_changed_gates for phrase in gate.require)
         command_count = len(command_evidence.commands)
         total_command_tokens = sum(len(segment) for segments in segment_cache.values() for segment in segments)
         estimated_command_work = total_phrase_tokens * total_command_tokens
@@ -345,11 +384,7 @@ async def check_policy(request: PolicyCheckRequest) -> PolicyCheckResponse:
     # Evaluated in declaration order (not grouped by type) so a caller reading
     # `results` positionally sees the same order as the policy it submitted.
     results = [
-        evaluate_changed_path(gate, changed_path_evidence)
-        if isinstance(gate, ChangedPathGate)
-        else evaluate_command_match(
-            gate, command_evidence, segment_cache=segment_cache, phrase_cache=phrase_cache
-        )
+        _evaluate_gate(gate, changed_path_evidence, command_evidence, segment_cache, phrase_cache)
         for gate in spec.gates
     ]
     blocked = any(result.enforcement == "required" and result.outcome.is_blocking for result in results)

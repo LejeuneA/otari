@@ -244,6 +244,59 @@ _HOOK_COMMAND_TOOL_FIELDS = {"Bash": "command"}
 # would imply the two are always one process.
 _HOOK_MAX_COMMAND_LENGTH = 4096
 
+# Mirror routes/hooks.py's own _MAX_COMMANDS/_MAX_TOTAL_COMMAND_CHARS, for the
+# same reason _HOOK_MAX_COMMAND_LENGTH does: per-command truncation alone does
+# not bound the total. A Stop event now submits every Bash command the whole
+# session ran, not the single command a PreToolUse call would carry, so
+# reaching this aggregate is a real, not pathological, outcome of a long
+# session with several long commands (501 commands truncated to
+# _HOOK_MAX_COMMAND_LENGTH each already clears 2,000,000 characters). Left
+# unbounded, the server 422s the whole request, and that failure is total: it
+# takes every gate in the policy with it, changed_path included, not just the
+# command-evidence ones.
+_HOOK_MAX_COMMANDS = 10_000
+_HOOK_MAX_TOTAL_COMMAND_CHARS = 2_000_000
+
+
+def _bound_commands_for_submission(commands: list[str]) -> list[str]:
+    """Keep a Stop event's collected commands within the Hook Server's own request-size bounds.
+
+    Drops from the oldest end, keeping the most recent commands: the same
+    "keep what's most likely still relevant" tradeoff
+    _HOOK_MAX_COMMAND_LENGTH's own head-preserving truncation makes, applied
+    to whole commands instead of characters within one. Prints one summary
+    line per bound actually tripped rather than one per dropped command, so a
+    long session does not spam stderr.
+    """
+    if len(commands) > _HOOK_MAX_COMMANDS:
+        dropped = len(commands) - _HOOK_MAX_COMMANDS
+        commands = commands[-_HOOK_MAX_COMMANDS:]
+        click.echo(
+            f"otari hook: session ran {dropped + _HOOK_MAX_COMMANDS:,} commands, over the "
+            f"{_HOOK_MAX_COMMANDS:,} limit; dropped the oldest {dropped:,}.",
+            err=True,
+        )
+
+    total_chars = sum(len(command) for command in commands)
+    if total_chars > _HOOK_MAX_TOTAL_COMMAND_CHARS:
+        kept: list[str] = []
+        running_total = 0
+        for command in reversed(commands):
+            if running_total + len(command) > _HOOK_MAX_TOTAL_COMMAND_CHARS:
+                break
+            kept.append(command)
+            running_total += len(command)
+        kept.reverse()
+        click.echo(
+            f"otari hook: session command evidence totals {total_chars:,} characters, over the "
+            f"{_HOOK_MAX_TOTAL_COMMAND_CHARS:,} limit; dropped the oldest {len(commands) - len(kept):,} "
+            "command(s) so the rest of the check can still run.",
+            err=True,
+        )
+        commands = kept
+
+    return commands
+
 
 def _hook_find_repo_root(start: Path) -> Path | None:
     current = start.resolve()
@@ -296,6 +349,108 @@ def _hook_collect_changed_paths(repo_root: Path) -> list[str] | None:
         paths.append(path)
         index += 2 if ("R" in status or "C" in status) else 1
     return paths
+
+
+# Claude Code's own wrapper around a hook's blocking stderr, written as the
+# denied tool call's `tool_result` content: "{event}:{tool_name} hook error:
+# [{hook_command}]: {stderr}". Both substrings, not just "hook error:" alone,
+# because a *PostToolUse* hook can also fail this way and that call already
+# executed; only a PreToolUse denial means the command never ran. This is
+# Claude Code's own internal message shape, not a documented contract, so it
+# is a best-effort signal: failing to recognize a denial (an unmatched
+# format change) leaves the command in evidence rather than dropping it,
+# which is the safer direction for a footgun-catcher to fail in.
+_PRETOOLUSE_DENIAL_MARKERS = ("PreToolUse:", "hook error:")
+
+
+def _tool_result_text(content: object) -> str:
+    """Flatten a `tool_result` block's `content` to plain text, whichever shape it is.
+
+    Anthropic's own API allows either a bare string or a list of content
+    blocks; Claude Code's transcripts use the bare-string form for a hook
+    denial specifically (confirmed against a real transcript), but nothing
+    guarantees that stays true, so both are handled.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            block["text"] for block in content if isinstance(block, dict) and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _hook_collect_transcript_commands(transcript_path: Path) -> list[str] | None:
+    """Evidence for a `command_match`/`command_if_changed` gate on a Stop event.
+
+    Claude Code's own Stop payload names no commands either, same as it
+    names no changed files (see `_hook_collect_changed_paths`), but it does
+    carry `transcript_path`: the session's own JSONL transcript on disk,
+    one record per line. Each Bash call the session made is recorded as a
+    `message.content[]` block with `type: "tool_use"`, `name: "Bash"`, and
+    `input.command`; this walks every line collecting those, in the order
+    they appear. A record with `isSidechain: true` (a subagent's own turn)
+    is skipped: its commands are not commands this policy's own agent ran,
+    even if Claude Code ever starts interleaving them into the same file
+    (it does not today; a subagent transcript is its own file).
+
+    A `Bash` call a `PreToolUse` hook denied is excluded: it is recorded in
+    the transcript as a `tool_use` block like any other, whether or not it
+    was allowed to run, and the transcript's only record of the denial is a
+    later `tool_result` block naming the same `tool_use_id`, `is_error:
+    true`, with content matching `_PRETOOLUSE_DENIAL_MARKERS`. Without this,
+    a command a policy already blocked once at `PreToolUse` keeps failing
+    every later `Stop` for the same, never-executed attempt, and worse for
+    `command_if_changed`: a *denied* attempt at the required command would
+    read as though it had run, satisfying a gate it never actually did.
+
+    Returns None only when the transcript itself cannot be read (missing,
+    permissions, not a file): the same fail-open sentinel
+    `_hook_collect_changed_paths` uses, so the caller can tell "collected,
+    and there are none" (an empty list) apart from "could not collect at
+    all". A single malformed line is skipped, not fatal, matching
+    `services/claude_code_import.py`'s tolerance of the same file format.
+    """
+    try:
+        lines = transcript_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    # tool_use_id is None for a block missing or misshaping its own id: kept
+    # in the requested list regardless (never silently dropped for that),
+    # just ineligible to ever match an entry in denied_ids.
+    requested: list[tuple[str | None, str]] = []
+    denied_ids: set[str] = set()
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("isSidechain"):
+            continue
+        message = record.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "tool_use" and block.get("name") == "Bash":
+                tool_input = block.get("input")
+                command = tool_input.get("command") if isinstance(tool_input, dict) else None
+                if isinstance(command, str) and command:
+                    tool_use_id = block.get("id")
+                    requested.append((tool_use_id if isinstance(tool_use_id, str) else None, command))
+            elif block_type == "tool_result" and block.get("is_error"):
+                tool_use_id = block.get("tool_use_id")
+                text = _tool_result_text(block.get("content"))
+                if isinstance(tool_use_id, str) and all(marker in text for marker in _PRETOOLUSE_DENIAL_MARKERS):
+                    denied_ids.add(tool_use_id)
+
+    return [command for tool_use_id, command in requested if tool_use_id is None or tool_use_id not in denied_ids]
 
 
 @cli.group(name="hook", invoke_without_command=True)
@@ -356,7 +511,13 @@ def hook(ctx: click.Context, harness: str, config: str | None, url: str | None, 
         return
 
     changed_paths: list[str] = []
-    commands: list[str] = []
+    # `[]`, not None, by default: PreToolUse's edit-tool branch below leaves
+    # this as `[]` on purpose, meaning "no command evidence for this call",
+    # the same not_applicable-not-unknown contract every other command-less
+    # event has always had. Only the Stop branch may set this to None, when
+    # it collected no evidence at all rather than collecting and finding
+    # nothing.
+    commands: list[str] | None = []
     if event == "PreToolUse":
         tool_name = payload.get("tool_name", "")
         tool_input = payload.get("tool_input") or {}
@@ -405,6 +566,32 @@ def hook(ctx: click.Context, harness: str, config: str | None, url: str | None, 
             click.echo("otari hook: could not read Git state, not blocking.", err=True)
             return
         changed_paths = collected
+
+        # transcript_path is Claude Code's own name for the session's JSONL
+        # transcript on disk. Absent, or unreadable, submits None rather than
+        # `[]`: `[]` means "collected, and there is none", which would let a
+        # required command_match/command_if_changed gate read a failed
+        # collection as a clean pass instead of the unresolved `unknown` it
+        # actually is (see docs/agent-gates.md).
+        transcript_path = payload.get("transcript_path")
+        commands = _hook_collect_transcript_commands(Path(transcript_path)) if transcript_path else None
+        if commands:
+            # Same truncation the PreToolUse Bash branch applies to its one
+            # command, applied per command here: a whole session's worth of
+            # transcript-collected commands makes it more likely, not less,
+            # that at least one clears _HOOK_MAX_COMMAND_LENGTH (a heredoc
+            # anywhere in the session, not just in the single command a
+            # PreToolUse call would carry), and one oversize entry would
+            # otherwise 422 the whole check open.
+            oversize = sum(1 for command in commands if len(command) > _HOOK_MAX_COMMAND_LENGTH)
+            if oversize:
+                click.echo(
+                    f"otari hook: {oversize} command(s) from the transcript exceeded "
+                    f"{_HOOK_MAX_COMMAND_LENGTH:,} characters, checking only the first that many of each.",
+                    err=True,
+                )
+                commands = [command[:_HOOK_MAX_COMMAND_LENGTH] for command in commands]
+            commands = _bound_commands_for_submission(commands)
     else:
         return  # An event this harness integration does not check yet.
 
@@ -551,15 +738,19 @@ def _starter_gates_yaml(repo_name: str) -> str:
     )
 
 
-def _merge_pretooluse_hook(settings_path: Path, matcher: str, command: str) -> bool:
-    """Add or update a PreToolUse hook entry pointing at otari hook.
+def _merge_hook_entry(settings_path: Path, event: str, command: str, *, matcher: str | None = None) -> bool:
+    """Add or update an `event` hook entry (e.g. "PreToolUse", "Stop") pointing at otari hook.
+
+    `matcher` is omitted (no key at all, not a null one) for an event that
+    is not tool-scoped, `Stop` being the one this integration registers:
+    Claude Code's own Stop hooks carry no `matcher`, unlike `PreToolUse`'s.
 
     Returns True if a new entry was appended, False if an existing one was
     found (by its command already starting with this same otari binary
     invoked as "hook", whatever flags it had) and updated in place instead of
     duplicated. Every other key in the file, including other hooks and
-    permissions, and any sibling hook command under the same matcher, is
-    preserved untouched.
+    permissions, other events, and any sibling hook command under the same
+    matcher, is preserved untouched.
     """
     if settings_path.is_file():
         try:
@@ -574,19 +765,20 @@ def _merge_pretooluse_hook(settings_path: Path, matcher: str, command: str) -> b
     hooks_section = settings.setdefault("hooks", {})
     if not isinstance(hooks_section, dict):
         raise click.ClickException(f'{settings_path}\'s "hooks" must be a JSON object.')
-    pretooluse = hooks_section.setdefault("PreToolUse", [])
-    if not isinstance(pretooluse, list):
-        raise click.ClickException(f'{settings_path}\'s "hooks.PreToolUse" must be a JSON array.')
+    entries = hooks_section.setdefault(event, [])
+    if not isinstance(entries, list):
+        raise click.ClickException(f'{settings_path}\'s "hooks.{event}" must be a JSON array.')
     otari_hook_prefix = command.split(" --", 1)[0]  # "<path> hook", before any flags
 
     updated = False
-    for entry in pretooluse:
+    for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
             continue
         for hook_item in entry["hooks"]:
             existing_command = hook_item.get("command") if isinstance(hook_item, dict) else None
             if isinstance(existing_command, str) and existing_command.startswith(otari_hook_prefix):
-                entry["matcher"] = matcher
+                if matcher is not None:
+                    entry["matcher"] = matcher
                 hook_item["command"] = command
                 updated = True
                 break
@@ -594,7 +786,10 @@ def _merge_pretooluse_hook(settings_path: Path, matcher: str, command: str) -> b
             break
 
     if not updated:
-        pretooluse.append({"matcher": matcher, "hooks": [{"type": "command", "command": command}]})
+        new_entry: dict[str, object] = {"hooks": [{"type": "command", "command": command}]}
+        if matcher is not None:
+            new_entry = {"matcher": matcher, **new_entry}
+        entries.append(new_entry)
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
@@ -617,11 +812,15 @@ def _merge_pretooluse_hook(settings_path: Path, matcher: str, command: str) -> b
 def hook_setup(harness: str, api_key: str | None) -> None:
     """Register otari hook in a supported agent's own settings.
 
-    Writes or updates a PreToolUse hook entry in .claude/settings.local.json
-    (personal, gitignored, never committed) so registering the Hook Server is
-    not a manual JSON edit. Offers to scaffold a starter .otari-gates.yml
-    when this repo has none yet, and picks the matcher (whether it needs to
-    cover Bash) from whatever gates the policy turns out to have.
+    Writes or updates a PreToolUse hook entry and a Stop hook entry in
+    .claude/settings.local.json (personal, gitignored, never committed) so
+    registering the Hook Server is not a manual JSON edit. Both point at the
+    same otari hook invocation; Claude Code passes its own hook_event_name in
+    the payload, so one callback serves either event. Offers to scaffold a
+    starter .otari-gates.yml when this repo has none yet, and picks the
+    PreToolUse matcher (whether it needs to cover Bash) from whatever gates
+    the policy turns out to have; Stop needs no matcher; see
+    docs/agent-gates.md for why both are registered unconditionally.
     """
     root = _hook_find_repo_root(Path.cwd())
     if root is None:
@@ -646,8 +845,7 @@ def hook_setup(harness: str, api_key: str | None) -> None:
         resolved_key = _resolve_hook_credential()
         if not resolved_key:
             click.echo(
-                "Could not resolve a credential automatically (no master_key in config.yml, "
-                ".env, or the environment)."
+                "Could not resolve a credential automatically (no master_key in config.yml, .env, or the environment)."
             )
             embedded_key = click.prompt("Enter an Otari API key or master key", hide_input=True)
         # A key resolved automatically is not embedded: the same resolution
@@ -661,9 +859,18 @@ def hook_setup(harness: str, api_key: str | None) -> None:
     command = shlex.join(command_parts)
 
     settings_path = root / ".claude" / "settings.local.json"
-    created = _merge_pretooluse_hook(settings_path, matcher, command)
-    click.echo(f"{'Added' if created else 'Updated'} the PreToolUse hook in {settings_path}.")
+    pretooluse_created = _merge_hook_entry(settings_path, "PreToolUse", command, matcher=matcher)
+    click.echo(f"{'Added' if pretooluse_created else 'Updated'} the PreToolUse hook in {settings_path}.")
     click.echo(f"Matcher: {matcher}" + ("" if include_bash else " (add a command_match gate to also cover Bash)"))
+
+    # Registered unconditionally, not only when the policy has a gate that
+    # benefits: changed_path already falls back to `git status` on Stop
+    # (catching a Bash-written change PreToolUse never saw coming), and
+    # command_if_changed/command_match now read real command evidence there
+    # too (from the session's own transcript; see docs/agent-gates.md). A
+    # PreToolUse-only install left both silently unreachable.
+    stop_created = _merge_hook_entry(settings_path, "Stop", command)
+    click.echo(f"{'Added' if stop_created else 'Updated'} the Stop hook in {settings_path}.")
 
 
 @cli.group()

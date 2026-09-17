@@ -94,9 +94,7 @@ def test_omitted_changed_paths_blocks_rather_than_passing(
     assert body["blocked"] is True
 
 
-def test_unsupported_gate_type_is_rejected_not_skipped(
-    client: TestClient, master_key_header: dict[str, str]
-) -> None:
+def test_unsupported_gate_type_is_rejected_not_skipped(client: TestClient, master_key_header: dict[str, str]) -> None:
     policy = (
         'schema_version: "1.0"\npolicy:\n  id: x\ngates:\n'
         "  - id: g\n    type: judge\n    enforcement: required\n    message: m\n"
@@ -469,8 +467,7 @@ def test_many_command_match_gates_do_not_retokenize_per_gate(
     evaluation collapses this to well under a second.
     """
     gates_yaml = "".join(
-        f'  - id: g{i}\n    type: command_match\n    enforcement: required\n'
-        f'    forbidden: ["npm"]\n    message: m\n'
+        f'  - id: g{i}\n    type: command_match\n    enforcement: required\n    forbidden: ["npm"]\n    message: m\n'
         for i in range(100)
     )
     policy = 'schema_version: "1.0"\npolicy:\n  id: x\ngates:\n' + gates_yaml
@@ -639,3 +636,146 @@ def test_explicit_empty_commands_is_not_applicable_not_a_pass(
     body = response.json()
     assert body["blocked"] is False
     assert body["results"][0]["outcome"] == "not_applicable"
+
+
+_COMMAND_IF_CHANGED_POLICY = """\
+schema_version: "1.0"
+policy:
+  id: test/openapi-needs-postman
+gates:
+  - id: openapi-changed-needs-postman
+    type: command_if_changed
+    enforcement: required
+    when_changed: ["docs/public/openapi.json"]
+    require: ["make postman"]
+    message: Run make postman after changing openapi.json.
+"""
+
+
+def test_command_if_changed_passes_when_required_command_ran(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    response = client.post(
+        f"{API_ROOT}/hooks/check",
+        json={
+            "policy_yaml": _COMMAND_IF_CHANGED_POLICY,
+            "changed_paths": ["docs/public/openapi.json"],
+            "commands": ["make postman"],
+        },
+        headers=master_key_header,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["blocked"] is False
+    assert body["results"][0]["outcome"] == "pass"
+
+
+def test_command_if_changed_blocks_when_required_command_did_not_run(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    response = client.post(
+        f"{API_ROOT}/hooks/check",
+        json={
+            "policy_yaml": _COMMAND_IF_CHANGED_POLICY,
+            "changed_paths": ["docs/public/openapi.json"],
+            "commands": ["git status"],
+        },
+        headers=master_key_header,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["blocked"] is True
+    assert body["results"][0]["outcome"] == "fail"
+    assert body["results"][0]["detail"] == "docs/public/openapi.json"
+
+
+def test_command_if_changed_is_not_applicable_when_no_matching_path_changed(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    response = client.post(
+        f"{API_ROOT}/hooks/check",
+        json={
+            "policy_yaml": _COMMAND_IF_CHANGED_POLICY,
+            "changed_paths": ["README.md"],
+            "commands": [],
+        },
+        headers=master_key_header,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["blocked"] is False
+    assert body["results"][0]["outcome"] == "not_applicable"
+
+
+def test_command_if_changed_does_not_block_the_edit_that_triggers_it(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    """The exact evidence a PreToolUse edit-tool call submits for its own
+
+    target: changed_paths naming the file about to be edited, and an
+    explicit empty commands list (edit calls never collect command
+    evidence). The edit has not happened yet, so the required command
+    cannot possibly have already run; this must resolve not_applicable, not
+    a fail that would permanently block ever editing a when_changed-matched
+    path (the required command can never run before the change that needs
+    it, since that change is the one this very call is about to make).
+    """
+    response = client.post(
+        f"{API_ROOT}/hooks/check",
+        json={
+            "policy_yaml": _COMMAND_IF_CHANGED_POLICY,
+            "changed_paths": ["docs/public/openapi.json"],
+            "commands": [],
+        },
+        headers=master_key_header,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["blocked"] is False
+    assert body["results"][0]["outcome"] == "not_applicable"
+
+
+def test_command_if_changed_blocks_when_commands_is_omitted(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    """Omitting `commands` entirely means command evidence was never
+
+    collected at all, distinct from collecting it and finding nothing; a
+    required command_if_changed gate must read that as `unknown` and block.
+    """
+    response = client.post(
+        f"{API_ROOT}/hooks/check",
+        json={"policy_yaml": _COMMAND_IF_CHANGED_POLICY, "changed_paths": ["docs/public/openapi.json"]},
+        headers=master_key_header,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["blocked"] is True
+    assert body["results"][0]["outcome"] == "unknown"
+
+
+def test_command_if_changed_oversized_workload_is_rejected(
+    client: TestClient, master_key_header: dict[str, str]
+) -> None:
+    """when_changed's globs share changed_path's own match-work budget: a
+
+    command_if_changed gate with a large enough when_changed list against a
+    large enough changed_paths list should trip the same existing limit
+    (test_oversized_aggregate_workload_is_rejected's own shape), not a new,
+    unbounded code path.
+    """
+    when_changed = [f'"pattern-{i:03d}-{"x" * 40}"' for i in range(100)]
+    policy = (
+        'schema_version: "1.0"\npolicy:\n  id: x\ngates:\n'
+        "  - id: g\n    type: command_if_changed\n    enforcement: required\n"
+        f"    when_changed: [{', '.join(when_changed)}]\n"
+        '    require: ["make postman"]\n    message: m\n'
+    )
+    changed_paths = [f"src/{'y' * 40}-{i:05d}.txt" for i in range(10_000)]
+    response = client.post(
+        f"{API_ROOT}/hooks/check",
+        json={"policy_yaml": policy, "changed_paths": changed_paths},
+        headers=master_key_header,
+    )
+    assert response.status_code == 422, response.text
+    assert "match operations" in response.json()["detail"]

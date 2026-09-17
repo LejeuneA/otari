@@ -90,10 +90,38 @@ class CommandMatchGate:
     type: Literal["command_match"] = "command_match"
 
 
+@dataclass(frozen=True, slots=True)
+class CommandIfChangedGate:
+    """A gate that fails when a changed path matches but no required command ran.
+
+    ``when_changed`` is a tuple of repo-relative POSIX globs, the same
+    grammar ``ChangedPathGate.forbidden`` uses. ``require`` is a tuple of
+    shell phrases, the same grammar ``CommandMatchGate.forbidden`` uses,
+    matched the same token-based way; any one of them satisfies the gate
+    (an OR, same as a ``forbidden`` list matching any one entry). This is
+    what expresses "if this changed, that must have run" (e.g. regenerating
+    a committed artifact), which neither of the other two gate types can:
+    each of those checks one independent condition, not a correlation
+    between two.
+
+    Meaningful mainly when both evidence lists reflect a whole session, not
+    one tool call: on a ``Stop`` event, where ``otari hook`` now collects
+    real command evidence from the session's own transcript, not on a
+    single ``PreToolUse`` call.
+    """
+
+    id: str
+    enforcement: Enforcement
+    when_changed: tuple[str, ...]
+    require: tuple[str, ...]
+    message: str
+    type: Literal["command_if_changed"] = "command_if_changed"
+
+
 # Extend this alias as check_passed and judge land; do not let a new gate
 # type skip it, or the policy loader's dispatch on ``type`` silently stops
 # covering it.
-GateSpec = ChangedPathGate | CommandMatchGate
+GateSpec = ChangedPathGate | CommandMatchGate | CommandIfChangedGate
 
 
 @dataclass(frozen=True, slots=True)

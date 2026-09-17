@@ -16,14 +16,14 @@ diffs.
 
 This is the first slice. It ships:
 
-- Two gate types, `changed_path` and `command_match`.
+- Three gate types: `changed_path`, `command_match`, and `command_if_changed`.
 - `POST /api/v1/hooks/check`, evaluated against evidence the caller submits.
 - `otari hook --harness claude-code`, a real installed command that reads a
   Claude Code hook payload and calls the endpoint above.
-- `otari hook setup`, which registers it: writes the hook entry into Claude
-  Code's own settings and, if this repo has no `.otari-gates.yml` yet, offers
-  to scaffold a starter one. No judge gate or reusable packs yet, and no
-  harness other than Claude Code.
+- `otari hook setup`, which registers it: writes a `PreToolUse` and a `Stop`
+  hook entry into Claude Code's own settings and, if this repo has no
+  `.otari-gates.yml` yet, offers to scaffold a starter one. No judge gate or
+  reusable packs yet, and no harness other than Claude Code.
 
 This is a hook protocol, not a local filesystem reader: Otari never opens a
 caller's repository itself. The caller (an agent hook today; a native
@@ -133,6 +133,45 @@ Two things this gate does not do, on purpose, for now:
   argument. The alternative, refusing to judge, blocks every heredoc a real
   session runs.
 
+### `command_if_changed` (available now)
+
+Fails when a submitted path matches one of `when_changed`'s globs but no
+submitted command matches one of `require`'s phrases. `when_changed` is the
+same glob grammar `changed_path`'s `forbidden` uses; `require` is the same
+shell-phrase grammar `command_match`'s `forbidden` uses, matched the same
+token-based way (any one of `require`'s phrases satisfies the gate). This is
+what expresses "if this changed, that must have run", a correlation neither
+of the other two gate types can: each checks one independent condition.
+
+```yaml
+  - id: openapi-changed-needs-postman
+    type: command_if_changed
+    enforcement: required
+    when_changed: ["docs/public/openapi.json"]
+    require: ["make postman"]
+    message: >-
+      docs/public/openapi.json changed; regenerate it with
+      scripts/generate_openapi.py, then run `make postman` to keep the
+      Postman collection in sync (see AGENTS.md, "Generated Artifacts").
+```
+
+This gate resolves for real only when both a changed-path list and a command
+list were actually submitted: either being omitted resolves `unknown`
+(evidence was never collected), not a silent pass. An explicitly empty
+`commands` list resolves `not_applicable`, not `fail`, once a matching path
+is found, mirroring `command_match`'s own empty-commands rule: this matters
+here specifically because a `PreToolUse` call for the edit itself submits
+its own target as the changed path and an empty `commands` (an edit call
+never collects command evidence), before the edit has run. Treating that as
+`fail` would permanently block editing a `when_changed`-matched path at all,
+since the required command can never have already run in response to a
+change that has not happened yet. This gate is therefore meaningful mainly
+on `Stop`, where `otari hook` submits real, whole-session command evidence
+(see below); the one gap this leaves, symmetric with `command_match`'s own,
+is a session that changes a matched path without ever invoking `Bash`,
+which also resolves `not_applicable` rather than the `fail` it arguably
+deserves.
+
 ### Not built yet
 
 - `check_passed`: a named verifier command passed on the current inputs.
@@ -238,39 +277,68 @@ one call can produce, never both kinds. `command_match` therefore also
 resolves `not_applicable`, not `pass`, on an edit call: it has no command to
 check either way, and the distinction is what keeps a required command_match
 gate from reading every unrelated `Edit`/`Write`/`NotebookEdit` call as a
-clean pass. On a `Stop` event, `changed_path` instead submits `git status
+clean pass.
+
+On a `Stop` event, `changed_path` instead submits `git status
 --porcelain`'s output, which does cover shell-written file changes (anything
 a `Bash` call touched), at the cost of only catching them after the fact
-rather than preventing them; `command_match` does not participate in the
-`Stop` event at all, since there is no evidence of which commands ran that a
-`Stop` payload carries or Git can reconstruct, and resolves `not_applicable`
-there too rather than a silent, evidence-free `pass`.
+rather than preventing them. `command_match` and `command_if_changed` both
+submit whatever `Bash` commands `otari hook` finds in the session's own
+transcript (see below): every `Bash` tool call the session made so far, not
+just the most recent one, so a required `command_match` gate now evaluates
+for real on `Stop` too, not only on `PreToolUse`.
 
-`otari hook` runs `git status` itself on a `Stop` event because Claude
-Code's own Stop payload names no files: unlike `PreToolUse`, where
-`tool_input` already hands you a target, there is nothing to check on
-`Stop` unless something goes and finds out what changed. This is specific
-to `changed_path`; a future gate type (`check_passed`) collects whatever
-evidence it needs in its own way, not through this same Git-status step.
+`otari hook` collects both kinds of Stop-time evidence itself, because
+Claude Code's own Stop payload carries neither directly: `git status` for
+changed paths, the same as always, and a scan of `transcript_path` (the
+session's own JSONL file, which the payload does carry) for command
+evidence. It walks every line of that file looking for a `Bash` tool call
+(`message.content[]` blocks with `type: "tool_use"`, `name: "Bash"`) and
+collects each one's `input.command`, skipping a record marked
+`isSidechain: true` (a subagent's own turn, not this policy's own agent).
+If the transcript cannot be read at all, `otari hook` submits no command
+evidence (`commands: null`, not `[]`): the difference between "collected,
+and there is none" and "could not collect" is what keeps a required
+`command_match`/`command_if_changed` gate from reading a failed read as a
+clean pass (it resolves `unknown`, and blocks, instead).
 
-1. Run `otari hook setup`. It writes a `PreToolUse` hook entry into
-   `.claude/settings.local.json` (personal, usually gitignored by a global
-   `~/.config/git/ignore`, so it never lands in a PR), pointing at this
-   install's own `otari hook --harness claude-code`. If this repo has no
-   `.otari-gates.yml` yet, it offers to write a small starter one first, so
-   there is something to check rather than a hook that always passes.
+**`claude -p` does not appear to enforce the `Stop` hook.** Verified: a
+zero-tool-use `claude -p` prompt run against a policy violation showed no
+trace of a `Stop` hook anywhere in that invocation's own transcript (no
+`hookEventName`, no `stop_hook_active`), and the process exited cleanly
+rather than continuing the way a genuinely blocked `Stop` hook is documented
+to. Whether headless mode skips dispatching the hook entirely or dispatches
+it and ignores a blocking exit code is Claude Code's own internal behavior,
+not something visible from here or something otari controls either way. Test
+a `command_match`/`command_if_changed` gate's `Stop`-time enforcement against
+an interactive session; a `-p` run that doesn't block proves nothing about
+whether the gate itself is working.
 
-   The `matcher` it writes only includes `Bash` when the policy actually has
-   a `command_match` gate to check a command against: the round trip is
-   otherwise harmless (nothing in `tool_input` matches a `changed_path`
-   gate, so it always passes), but there is no reason to pay it.
+1. Run `otari hook setup`. It writes both a `PreToolUse` hook entry and a
+   `Stop` hook entry into `.claude/settings.local.json` (personal, usually
+   gitignored by a global `~/.config/git/ignore`, so it never lands in a
+   PR), both pointing at this install's own
+   `otari hook --harness claude-code`; Claude Code passes its own
+   `hook_event_name` in the payload, so one callback serves both. If this
+   repo has no `.otari-gates.yml` yet, it offers to write a small starter
+   one first, so there is something to check rather than a hook that always
+   passes.
+
+   The `PreToolUse` `matcher` it writes only includes `Bash` when the policy
+   actually has a `command_match` gate to check a command against: the round
+   trip is otherwise harmless (nothing in `tool_input` matches a
+   `changed_path` gate, so it always passes), but there is no reason to pay
+   it. `Stop` carries no `matcher` at all; it is registered unconditionally,
+   since `changed_path` always benefits from its Git-status fallback there
+   and a `command_match`/`command_if_changed` gate now needs it for real
+   command evidence.
 
    For a credential, it tries the same automatic resolution `otari hook`
    itself does at runtime (config file, `.env`, environment) before asking;
    if that finds nothing, it prompts once and writes the answer into the
    generated command rather than into `.env`. Re-running `otari hook setup`
-   updates that one entry in place rather than adding a duplicate, and
-   leaves every other hook or permission already in the file untouched.
+   updates both entries in place rather than adding duplicates, and leaves
+   every other hook or permission already in the file untouched.
 
    Safe to run again any time the policy or the credential changes.
    `otari hook setup --harness claude-code` is currently the only harness;
@@ -307,7 +375,8 @@ evidence it needs in its own way, not through this same Git-status step.
 `otari hook setup` writes exactly this, so this is worth knowing rather than
 needing: the entry is a `.claude/settings.local.json` (or
 `.claude/settings.json`, project-wide and committed, if the whole team should
-get it) hook block naming this install's own `otari` binary explicitly:
+get it) pair of hook blocks naming this install's own `otari` binary
+explicitly, one for `PreToolUse` and one for `Stop`:
 
 ```json
 {
@@ -315,6 +384,16 @@ get it) hook block naming this install's own `otari` binary explicitly:
     "PreToolUse": [
       {
         "matcher": "Edit|Write|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/abs/path/to/.venv/bin/otari hook --harness claude-code -c /abs/path/to/config.yml"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
         "hooks": [
           {
             "type": "command",

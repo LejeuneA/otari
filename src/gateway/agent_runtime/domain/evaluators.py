@@ -16,6 +16,7 @@ from gateway.agent_runtime.domain.types import (
     ChangedPathEvidence,
     ChangedPathGate,
     CommandEvidence,
+    CommandIfChangedGate,
     CommandMatchGate,
     GateResult,
     Outcome,
@@ -553,12 +554,14 @@ def evaluate_command_match(
 
     if not evidence.commands:
         # An explicitly empty commands list is not "checked, none forbidden":
-        # a caller submits it for exactly the events that never carry command
-        # evidence at all (Claude Code's Stop event, or a PreToolUse call for
-        # an edit tool rather than Bash; see docs/agent-gates.md). Reporting
-        # PASS there would read as a check that ran and found nothing, when
-        # this gate never had anything to check. not_applicable is the
-        # non-blocking outcome that says so honestly.
+        # a caller submits it both for a PreToolUse call that never collects
+        # command evidence at all (an edit tool rather than Bash) and for a
+        # Stop event whose real, whole-session scan (see cli.py's
+        # _hook_collect_transcript_commands) genuinely found none; see
+        # docs/agent-gates.md. Reporting PASS there would read as a check
+        # that ran and found nothing, when this gate never had anything to
+        # check. not_applicable is the non-blocking outcome that says so
+        # honestly.
         return GateResult(
             gate_id=gate.id,
             enforcement=gate.enforcement,
@@ -597,6 +600,110 @@ def evaluate_command_match(
         enforcement=gate.enforcement,
         outcome=Outcome.PASS,
         message="No forbidden commands run.",
+    )
+
+
+def evaluate_command_if_changed(
+    gate: CommandIfChangedGate,
+    changed_path_evidence: ChangedPathEvidence | None,
+    command_evidence: CommandEvidence | None,
+    *,
+    segment_cache: dict[str, list[list[str]]] | None = None,
+    phrase_cache: dict[str, list[str]] | None = None,
+) -> GateResult:
+    """Fail when a changed path matches `when_changed` but no command matches `require`.
+
+    Needs both evidence kinds to resolve for real: changed-path evidence to
+    know whether the gate applies at all, command evidence to know whether
+    the required command ran. Either being absent (``None``, not merely
+    empty) resolves ``unknown``, the same as either evaluator alone treats a
+    missing evidence list: a check that could not run must never read as one
+    that passed.
+
+    An explicitly empty ``command_evidence.commands`` resolves
+    ``not_applicable``, not ``fail``, once a matching path is found: this
+    mirrors ``evaluate_command_match``'s own empty-commands rule, and is
+    load-bearing here for a reason that rule did not have to consider. A
+    single ``PreToolUse`` edit-tool call submits its own target as
+    ``changed_paths`` and an explicit ``commands: []`` (it collected no
+    command evidence for this call, same as any other edit call), before
+    the edit itself has even run. Failing there would block every attempt
+    to edit a ``when_changed``-matched path forever, since the required
+    command can never have already run in response to a change that has
+    not happened yet: the edit that would need it is the very thing being
+    blocked. Reading empty commands as ``not_applicable`` defers this gate
+    to where it can actually resolve: a ``Stop`` event, where `otari hook`
+    submits the session's real, cumulative command evidence (see
+    docs/agent-gates.md). The one gap this leaves, symmetric with
+    `command_match`'s own: a session that changes a matched path without
+    ever invoking `Bash` at all (submitting real, comprehensive, and
+    genuinely empty command evidence) also resolves ``not_applicable``
+    rather than the ``fail`` it arguably deserves, since this evaluator
+    cannot distinguish "no command evidence to check" from "checked, and
+    none ran" any more than `command_match` can.
+
+    ``segment_cache`` and ``phrase_cache`` both mirror ``evaluate_command_match``'s
+    own parameters: a caller evaluating several command-evidence gates
+    against the same evidence (``hooks.py``'s ``check_policy``) builds each
+    once (``tokenize_commands``, ``tokenize_phrases``) and passes the same
+    dicts to every call, so tokenizing costs once per request rather than
+    once per gate.
+    """
+    if changed_path_evidence is None or command_evidence is None:
+        return GateResult(
+            gate_id=gate.id,
+            enforcement=gate.enforcement,
+            outcome=Outcome.UNKNOWN,
+            message="Change or command evidence was not submitted.",
+        )
+
+    matched_paths = sorted(
+        path for path in changed_path_evidence.changed_paths if _matches_any(path, gate.when_changed) is not None
+    )
+    if not matched_paths:
+        # Nothing this gate cares about changed: there is nothing to require
+        # a command for, independent of whether any command ran at all.
+        return GateResult(
+            gate_id=gate.id,
+            enforcement=gate.enforcement,
+            outcome=Outcome.NOT_APPLICABLE,
+            message="No changed path matched this gate's when_changed globs.",
+        )
+
+    if not command_evidence.commands:
+        return GateResult(
+            gate_id=gate.id,
+            enforcement=gate.enforcement,
+            outcome=Outcome.NOT_APPLICABLE,
+            message="No commands were submitted to check.",
+        )
+
+    # A cache built for a different gate is tolerated rather than a KeyError,
+    # mirroring evaluate_command_match's own guard: the parameter is optional
+    # and a caller that passes a partial one should get a slower evaluation,
+    # not a 500.
+    phrases_by_text = phrase_cache if phrase_cache is not None else {}
+    required_phrases = [phrases_by_text.get(phrase) or tokenize_phrase(phrase) for phrase in gate.require]
+    segments_by_command = segment_cache if segment_cache is not None else {}
+    satisfied = any(
+        _contains_subsequence(segment, phrase)
+        for command in command_evidence.commands
+        for segment in (segments_by_command.get(command) or _command_segments(command))
+        for phrase in required_phrases
+    )
+    if satisfied:
+        return GateResult(
+            gate_id=gate.id,
+            enforcement=gate.enforcement,
+            outcome=Outcome.PASS,
+            message="A required command ran.",
+        )
+    return GateResult(
+        gate_id=gate.id,
+        enforcement=gate.enforcement,
+        outcome=Outcome.FAIL,
+        message=gate.message,
+        detail=", ".join(matched_paths),
     )
 
 
