@@ -44,8 +44,8 @@ import type {
  * below it are the design's: "Observe" is where you look (the request log and
  * the usage rollups over it), "Build" is what the gateway serves (models, the
  * policies that route over them, and the tools it can call; the roles matrix's
- * name for the section, otari-ai#1942), and "Access" is who may call it (keys,
- * the upstream credentials those keys spend, and the workspace's roster).
+ * name for the section, otari-ai#1942), and "Access" is who may call it (keys
+ * and the workspace's roster).
  *
  * Each entry declares its own gating, and the two axes are independent:
  * `surface` (does this deployment host it) and `capability` (is it entitled).
@@ -188,16 +188,6 @@ const BASE_NAV_SECTIONS = [
         surface: "keys",
         icon: FiKey,
       },
-      // "Providers", not "Provider credentials": the page manages the
-      // credential *and* the instance it belongs to, the rail has one line for
-      // it, and a two-word label is what the rest of this group reads like.
-      {
-        to: "/providers",
-        label: "Providers",
-        surface: "providers",
-        icon: FiBox,
-        operatorOnly: "refused",
-      },
       // The selected workspace's roster, not the organization's. The
       // organization roster is "Members & roles" in the other context, and the
       // two pages cross-link, which is the distinction the prototype draws.
@@ -252,13 +242,9 @@ const BASE_NAV_SECTIONS = [
  * capability gate cannot express "declared but not served" without relaxing that
  * invariant. A surface gate says exactly this and needs no test change.
  *
- * Both have a page on the *workspace* rail that looks like them and is not:
- * `/providers` is this process's credentials, and `/tools/guardrails` is
- * what this process refuses. The organization ones are a tenant-wide credential
- * set and a ceiling over every workspace, which are different tables behind
- * different endpoints. Pointing the organization rows at the workspace pages
- * would put one destination on both rails, which `navContextForPath` cannot
- * express and `registry.test.ts` forbids.
+ * Both provider destinations live under General, with deployment surfaces
+ * choosing the credential store. The organization guardrail ceiling remains
+ * distinct from the workspace's `/tools/guardrails` page.
  */
 const ORGANIZATION_NAV_SECTIONS = [
   {
@@ -313,17 +299,6 @@ const ORGANIZATION_NAV_SECTIONS = [
         label: "Email domains",
         surface: "organizations",
         icon: FiAtSign,
-      },
-      // The organization's own upstream credentials, which is a different table
-      // from the workspace rail's `/providers`: over there a credential belongs
-      // to the process, here it belongs to the tenant. A deployment reports one
-      // surface or the other, never both, so exactly one of the two rows renders.
-      // See the note above.
-      {
-        to: "/organization/provider-keys",
-        label: "Providers",
-        surface: "organization_providers",
-        icon: FiBox,
       },
     ],
   },
@@ -390,15 +365,22 @@ const ORGANIZATION_NAV_SECTIONS = [
   },
   {
     id: "org-general",
-    // Keeps its heading with one row in it, where the index section at the top
-    // of the workspace rail has none. That is the same rule read in different
-    // surroundings rather than an exception to it: the index is first, with
-    // nothing above it to be absorbed into, and General is last under two
-    // labelled siblings, so a row with no heading here reads as the tail of
-    // Cost & billing. A heading earns its place when the section has labelled
-    // siblings, which is also why the deployment rail's one section has none.
     label: "General",
     items: [
+      // Each deployment reports the surface for its credential store.
+      {
+        to: "/providers",
+        label: "Providers",
+        surface: "providers",
+        icon: FiBox,
+        operatorOnly: "refused",
+      },
+      {
+        to: "/organization/provider-keys",
+        label: "Providers",
+        surface: "organization_providers",
+        icon: FiBox,
+      },
       {
         to: "/organization",
         label: "Org settings",
