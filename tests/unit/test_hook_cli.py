@@ -417,14 +417,18 @@ def test_stop_event_includes_a_command_that_ran_but_exited_nonzero(
     assert captured["json"]["commands"] == ["npm install"]
 
 
-def test_stop_event_bounds_aggregate_command_evidence(
+def test_stop_event_submits_no_commands_when_aggregate_evidence_is_oversize(
     monkeypatch: pytest.MonkeyPatch, repo: Path, tmp_path: Path
 ) -> None:
     """Per-command truncation alone doesn't bound the total: 501 commands,
 
     each safely under the per-command cap, already clear the Hook Server's
-    own aggregate _MAX_TOTAL_COMMAND_CHARS. Left unbounded, the resulting 422
-    fails the *whole* check open, not just the command-evidence gates.
+    own aggregate _MAX_TOTAL_COMMAND_CHARS. Submitting an arbitrary subset
+    (dropping the oldest) risks a false pass or false fail on whichever
+    command that subset happened to lose, so this submits no command
+    evidence at all (None) rather than a partial one: a required
+    command_match/command_if_changed gate then resolves unknown and blocks,
+    instead of risking either outcome on data known to be incomplete.
     """
 
     def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -446,13 +450,40 @@ def test_stop_event_bounds_aggregate_command_evidence(
     payload = {"hook_event_name": "Stop", "cwd": str(repo), "transcript_path": str(transcript)}
     result = _invoke(payload)
     assert result.exit_code == 0, result.output
-    sent = captured["json"]["commands"]
-    assert sum(len(command) for command in sent) <= gateway_cli._HOOK_MAX_TOTAL_COMMAND_CHARS
-    assert len(sent) < 501
-    assert "dropped the oldest" in result.output
-    # Most recent kept, oldest dropped.
-    assert any(command.startswith("cmd0500 ") for command in sent)
-    assert not any(command.startswith("cmd0000 ") for command in sent)
+    assert captured["json"]["commands"] is None
+    assert "submitting no command evidence" in result.output
+
+
+def test_stop_event_submits_no_commands_when_there_are_too_many(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, tmp_path: Path
+) -> None:
+    """Same reasoning as the aggregate-characters bound, for the count bound:
+
+    an arbitrary subset of way too many commands is not evidence a required
+    gate should trust either.
+    """
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    transcript = tmp_path / "session.jsonl"
+    lines = [
+        _transcript_line(command=f"cmd{i}", tool_use_id=f"toolu_{i}") for i in range(gateway_cli._HOOK_MAX_COMMANDS + 1)
+    ]
+    transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    captured: dict[str, Any] = {}
+
+    def fake_post(url: str, **kwargs: object) -> _FakeResponse:
+        captured["json"] = kwargs.get("json")
+        return _FakeResponse({"blocked": False, "results": []})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    payload = {"hook_event_name": "Stop", "cwd": str(repo), "transcript_path": str(transcript)}
+    result = _invoke(payload)
+    assert result.exit_code == 0, result.output
+    assert captured["json"]["commands"] is None
+    assert "submitting no command evidence" in result.output
 
 
 def test_stop_event_submits_no_commands_when_transcript_path_is_missing(

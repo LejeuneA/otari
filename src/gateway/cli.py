@@ -258,42 +258,46 @@ _HOOK_MAX_COMMANDS = 10_000
 _HOOK_MAX_TOTAL_COMMAND_CHARS = 2_000_000
 
 
-def _bound_commands_for_submission(commands: list[str]) -> list[str]:
-    """Keep a Stop event's collected commands within the Hook Server's own request-size bounds.
+def _bound_commands_for_submission(commands: list[str]) -> list[str] | None:
+    """Keep a Stop event's collected commands within the Hook Server's own request-size bounds,
+    or submit no command evidence at all rather than an arbitrary subset of it.
 
-    Drops from the oldest end, keeping the most recent commands: the same
-    "keep what's most likely still relevant" tradeoff
-    _HOOK_MAX_COMMAND_LENGTH's own head-preserving truncation makes, applied
-    to whole commands instead of characters within one. Prints one summary
-    line per bound actually tripped rather than one per dropped command, so a
-    long session does not spam stderr.
+    Dropping whole commands, unlike truncating one to its head
+    (`_HOOK_MAX_COMMAND_LENGTH`, applied before this is called), loses each
+    one entirely: which commands survive is an accident of chronological
+    order with no relationship to which one a gate actually cared about. A
+    dropped forbidden command would read as a false pass; a dropped required
+    one would read as a false fail. Evidence the caller could not submit in
+    full is None, the same principle `evaluators.py`'s own module docstring
+    already states for a missing evidence list altogether: a required
+    `command_match`/`command_if_changed` gate then resolves `unknown` and
+    blocks, rather than risking either outcome on data known to be
+    incomplete.
+
+    This does not revisit `_HOOK_MAX_COMMAND_LENGTH`'s own, separately
+    reasoned trade-off: keeping the head of one oversize command (rather
+    than dropping it, or the whole submission, outright) is deliberate,
+    since a Bash call carrying a heredoc clears that limit routinely and a
+    forbidden/required phrase is usually near a command's own head, its own
+    invocation.
     """
     if len(commands) > _HOOK_MAX_COMMANDS:
-        dropped = len(commands) - _HOOK_MAX_COMMANDS
-        commands = commands[-_HOOK_MAX_COMMANDS:]
         click.echo(
-            f"otari hook: session ran {dropped + _HOOK_MAX_COMMANDS:,} commands, over the "
-            f"{_HOOK_MAX_COMMANDS:,} limit; dropped the oldest {dropped:,}.",
+            f"otari hook: session ran {len(commands):,} commands, over the {_HOOK_MAX_COMMANDS:,} "
+            "limit; submitting no command evidence rather than an arbitrary subset of it.",
             err=True,
         )
+        return None
 
     total_chars = sum(len(command) for command in commands)
     if total_chars > _HOOK_MAX_TOTAL_COMMAND_CHARS:
-        kept: list[str] = []
-        running_total = 0
-        for command in reversed(commands):
-            if running_total + len(command) > _HOOK_MAX_TOTAL_COMMAND_CHARS:
-                break
-            kept.append(command)
-            running_total += len(command)
-        kept.reverse()
         click.echo(
             f"otari hook: session command evidence totals {total_chars:,} characters, over the "
-            f"{_HOOK_MAX_TOTAL_COMMAND_CHARS:,} limit; dropped the oldest {len(commands) - len(kept):,} "
-            "command(s) so the rest of the check can still run.",
+            f"{_HOOK_MAX_TOTAL_COMMAND_CHARS:,} limit; submitting no command evidence rather than an "
+            "arbitrary subset of it.",
             err=True,
         )
-        commands = kept
+        return None
 
     return commands
 
