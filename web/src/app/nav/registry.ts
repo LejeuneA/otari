@@ -221,7 +221,8 @@ const BASE_NAV_SECTIONS = [
  * provider credentials are the other, and that one is a *choice* rather than an
  * absence: the API and the page both exist, and a hosted deployment reports
  * `organization_providers` in place of the process-global `providers`, because
- * a credential keyed on an instance name alone is served to every tenant.
+ * a credential keyed on an instance name alone is served to every tenant. Both
+ * are rows under General, beside the row they belong with.
  *
  * The design draws two more, Billing and Gateways, and neither is declared here
  * at all, because neither is this build's to declare: Billing is
@@ -241,10 +242,6 @@ const BASE_NAV_SECTIONS = [
  * entry names to be in `BASE_CAPABILITIES`, that is, to be granted, so a
  * capability gate cannot express "declared but not served" without relaxing that
  * invariant. A surface gate says exactly this and needs no test change.
- *
- * Both provider destinations live under General, with deployment surfaces
- * choosing the credential store. The organization guardrail ceiling remains
- * distinct from the workspace's `/tools/guardrails` page.
  */
 const ORGANIZATION_NAV_SECTIONS = [
   {
@@ -367,7 +364,12 @@ const ORGANIZATION_NAV_SECTIONS = [
     id: "org-general",
     label: "General",
     items: [
-      // Each deployment reports the surface for its credential store.
+      // Two rows, one label, and exactly one of them ever renders: a
+      // deployment reports the process-global surface or the tenant-scoped one,
+      // never both. They are different tables behind different endpoints, so
+      // the shared label is the honest one rather than a duplicate. "Providers"
+      // and not "Provider credentials" either way: the page manages the
+      // credential *and* the instance it belongs to, and the rail has one line.
       {
         to: "/providers",
         label: "Providers",

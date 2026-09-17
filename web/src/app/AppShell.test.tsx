@@ -248,6 +248,14 @@ describe("AppShell responsive layout", () => {
     const user = userEvent.setup()
     await renderShell()
 
+    // On the index first, because that is the half the comment above is about:
+    // "/" lights here and must stop lighting once a page under it is open.
+    expect(document.title).toBe("Overview · Otari")
+    expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    )
+
     await user.click(await screen.findByRole("link", { name: "Organization" }))
     const providers = await screen.findByRole("link", { name: "Providers" })
     expect(providers).not.toHaveAttribute("aria-current")
@@ -559,9 +567,13 @@ describe("AppShell surface gating", () => {
     // Same reasoning as above, for the other context: the organization rail is
     // its own registry, and nothing else compares it against a full list.
     await renderShell(bootstrap(), { url: "/organization/members" })
+    // Awaited on Providers rather than on any other row: it is the one that
+    // declares `operatorOnly`, so it arrives with the membership context while
+    // the rest paint with the first render. Waiting on one of those would leave
+    // the snapshot below a race, which it measurably is without this.
     await within(
       screen.getByRole("navigation", { name: "Sidebar" }),
-    ).findByRole("link", { name: "Org settings" })
+    ).findByRole("link", { name: "Providers" })
 
     expect(
       within(screen.getByRole("navigation", { name: "Sidebar" }))
@@ -717,6 +729,9 @@ describe("AppShell entitlement gating", () => {
 
   it("adds the operator-only row to the rail once the caller is known to be one", async () => {
     mockMatchMedia(false)
+    // The case rides on one row, so it is only as good as that row's gate, and
+    // a row losing its gate is a registry edit that says nothing about this
+    // file. So the premise is asserted rather than assumed.
     expect(navItemForPath("/providers")?.operatorOnly).toBeDefined()
     await renderShell(bootstrap(), { operator: true, url: "/organization" })
 
