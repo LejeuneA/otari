@@ -22,6 +22,7 @@ import { TELEMETRY_EVENTS } from "@/shared/telemetry/events"
 import {
   bootstrap,
   callerOrganizationMembership,
+  HOSTED_SURFACES,
   organizationContext,
 } from "@/tests/fixtures"
 import { renderWithRouter } from "@/tests/router"
@@ -145,9 +146,13 @@ function renderShell(
     ),
     // The harness already mounts the component under test at `url`, so a probe
     // for that same path would be a duplicate route.
-    routes: [{ path: "/providers", element: <div>PROVIDERS PAGE</div> }].filter(
-      (route) => route.path !== url,
-    ),
+    routes: [
+      { path: "/providers", element: <div>PROVIDERS PAGE</div> },
+      {
+        path: "/organization/provider-keys",
+        element: <div>ORG PROVIDER KEYS PAGE</div>,
+      },
+    ].filter((route) => route.path !== url),
   })
 }
 
@@ -603,6 +608,39 @@ describe("AppShell surface gating", () => {
     // missing rows but overlay-owned ones this registry no longer declares at
     // all (otari#737).
     expect(screen.queryByText("Gateway")).toBeNull()
+  })
+
+  it("puts the hosted deployment's own Providers row in that same place", async () => {
+    mockMatchMedia(false)
+    // The other half of the either/or the two rows encode. A hosted deployment
+    // drops `providers` and reports `organization_providers` in its place, so
+    // the row under General is a different destination with the same label, and
+    // nothing above this asserts that: the registry test reads the declaration,
+    // and the page's own tests render it without a rail.
+    await renderShell(
+      bootstrap({ deployment_type: "hosted", surfaces: HOSTED_SURFACES }),
+      { url: "/organization/members" },
+    )
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar" })
+    const providers = await within(sidebar).findByRole("link", {
+      name: "Providers",
+    })
+    expect(providers).toHaveAttribute("href", "/organization/provider-keys")
+    // Above Org settings, which is the placement the move is about, and read
+    // off the rendered order rather than off the registry.
+    expect(
+      within(sidebar)
+        .getAllByRole("link")
+        .map((link) => link.textContent)
+        .slice(-2),
+    ).toEqual(["Providers", "Org settings"])
+
+    const user = userEvent.setup()
+    await user.click(providers)
+
+    expect(
+      await screen.findByText("ORG PROVIDER KEYS PAGE"),
+    ).toBeInTheDocument()
   })
 
   it("hides a destination whose surface the deployment does not host", async () => {
