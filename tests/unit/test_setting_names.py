@@ -118,6 +118,7 @@ _SETTING_NAMES = frozenset(
         "vision_describe_max_tokens",
         "vision_describe_model",
         "vision_strategy",
+        "web_fetch_enabled",
         "web_retrieval_trust_env_proxy",
         "web_search_allow_private_hosts",
         "web_search_backend_token",
