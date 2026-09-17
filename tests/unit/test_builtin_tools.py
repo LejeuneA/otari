@@ -13,12 +13,13 @@ from gateway.core.config import GatewayConfig
 from gateway.services._tool_loop import ToolBackend
 from gateway.services.sandbox_backend import CODE_EXECUTION_TOOL_NAME, SandboxBackend
 from gateway.services.tools import BUILTIN_TOOLS, BuiltinTool
-from gateway.services.web_retrieval_backend import WEB_SEARCH_TOOL_NAME, WebRetrievalBackend
+from gateway.services.web_retrieval_backend import WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME, WebRetrievalBackend
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = REPO_ROOT / "src" / "gateway" / "services" / "tools" / "_registry.py"
 TOOL_ENV = (
     "OTARI_SANDBOX_URL",
+    "OTARI_WEB_FETCH_ENABLED",
     "OTARI_WEB_SEARCH_URL",
     "OTARI_WEB_SEARCH_PROVIDER",
     "OTARI_WEB_SEARCH_PROVIDER_API_KEY",
@@ -73,6 +74,8 @@ def _backend_for(tool: BuiltinTool) -> ToolBackend:
     """The backend that runs ``tool``, built without opening a connection."""
     if tool.name == WEB_SEARCH_TOOL_NAME:
         return WebRetrievalBackend(base_url="http://search.invalid")
+    if tool.name == WEB_FETCH_TOOL_NAME:
+        return WebRetrievalBackend(enable_search=False, enable_fetch=True)
     if tool.name == CODE_EXECUTION_TOOL_NAME:
         return SandboxBackend(sandbox_url="http://sandbox.invalid")
     raise AssertionError(f"no backend case for listed tool {tool.name!r}")
@@ -90,6 +93,8 @@ def test_the_backend_that_runs_a_tool_advertises_its_listed_definition(tool: Bui
     ("overrides", "env"),
     [
         ({}, {}),
+        ({"web_fetch_enabled": True}, {}),
+        ({"web_fetch_enabled": False}, {}),
         ({"web_search_url": "http://search.invalid"}, {}),
         ({"web_search_provider": "brave", "web_search_provider_api_key": "key"}, {}),
         ({"web_search_provider": "brave"}, {}),
@@ -99,6 +104,8 @@ def test_the_backend_that_runs_a_tool_advertises_its_listed_definition(tool: Bui
     ],
     ids=[
         "nothing",
+        "fetch-enabled",
+        "fetch-disabled",
         "search-url",
         "search-provider",
         "search-provider-without-key",
