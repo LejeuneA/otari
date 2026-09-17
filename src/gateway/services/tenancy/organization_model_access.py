@@ -167,12 +167,21 @@ async def resolve_session_catalog_scope(
             organization_id=scope.organization.id, workspace_ids=scope.workspace_ids or []
         )
         byo_allowlist = await _get_byo_allowlist(db, active_keys)
-        # Dispatch asks the port only in a workspace with no active key that has a credential.
-        reachable_hosted = frozenset(
-            provider
-            for provider in hosted
-            if any((key := keys.get(provider)) is None or not has_credential(key) for keys in active_keys.values())
-        )
+        # Dispatch asks the port only in a workspace with no active key that has a
+        # credential. A member of no workspace yet has no workspace whose key could
+        # shadow the port, so the hosted providers are theirs to browse: they are
+        # what any workspace serves before a BYO key covers it, and what every
+        # other member of the organization is already shown.
+        if active_keys:
+            reachable_hosted = frozenset(
+                provider
+                for provider in hosted
+                if any(
+                    (key := keys.get(provider)) is None or not has_credential(key) for keys in active_keys.values()
+                )
+            )
+        else:
+            reachable_hosted = hosted
     byo_providers = (
         await provider_keys.get_byo_providers(organization_id=scope.organization.id) if hosted else frozenset()
     )

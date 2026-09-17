@@ -394,6 +394,22 @@ def test_a_hosted_provider_is_listed_for_a_member_of_an_organization_holding_no_
     assert port.asked_for == [world.alpha], "the port is asked for the caller's organization, once"
 
 
+def test_a_member_of_no_workspace_is_shown_hosted_models_as_deployment_managed(
+    client: TestClient, world: _World
+) -> None:
+    """Belonging to no workspace yet must not hide what the deployment serves everyone (#1318).
+
+    No workspace of theirs holds a key that could shadow the port, so the hosted
+    providers are their reach exactly as they are an owner's, and the flag says
+    the deployment pays the bill. BYO models stay absent: those need a workspace
+    whose key serves them.
+    """
+    bind_model_provider(client, HostedModelProvider("mistral"))
+    listed = _listing_as(client, world, "alpha_newcomer")
+    assert set(listed) == {_MISTRAL_MODEL}
+    assert listed[_MISTRAL_MODEL]["deployment_managed"] is True
+
+
 def test_a_hosted_provider_the_organization_also_holds_a_key_for_is_the_organizations_to_price(
     client: TestClient, world: _World
 ) -> None:
@@ -473,7 +489,14 @@ def test_the_deployment_managed_flag_agrees_with_the_rate_override_gate(
             id="a-disabled-key-leaves-the-provider-to-the-port",
         ),
         pytest.param("alpha_member", False, True, (), set(), id="a-disabled-key-and-no-port-list-nothing"),
-        pytest.param("alpha_newcomer", False, False, ("mistral",), set(), id="a-member-of-no-workspace-gets-nothing"),
+        pytest.param(
+            "alpha_newcomer",
+            False,
+            False,
+            ("mistral",),
+            {_MISTRAL_MODEL},
+            id="a-member-of-no-workspace-is-shown-the-hosted-provider",
+        ),
         pytest.param(
             "alpha_owner",
             True,
