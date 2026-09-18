@@ -12,7 +12,7 @@ export function SetupSuccessMark() {
     return () => controller.abort()
   }, [])
   return (
-    <span ref={markRef} className="mt-0.5 flex shrink-0">
+    <span ref={markRef} className="flex shrink-0">
       <FiCheck aria-hidden className="text-success size-6" />
     </span>
   )
