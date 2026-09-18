@@ -18,7 +18,6 @@ import type {
   User,
 } from "@/client"
 import { Button } from "@/design-system/actions/Button"
-import { CopyButton } from "@/design-system/actions/CopyButton"
 import {
   CopyField,
   concealedFingerprint,
@@ -1086,17 +1085,9 @@ export function KeysPage() {
   )
   const renderPrefix = useCallback(
     (k: ApiKey) => (
-      <div className="flex items-center gap-1 whitespace-nowrap">
-        <code className="text-mono-caption text-muted">
-          {keyFingerprint(k) ?? "—"}
-        </code>
-        {k.key_prefix ? (
-          <CopyButton
-            value={k.key_prefix}
-            label={`key prefix for ${label(k)}`}
-          />
-        ) : null}
-      </div>
+      <code className="whitespace-nowrap text-mono-caption text-muted">
+        {keyFingerprint(k) ?? "—"}
+      </code>
     ),
     [],
   )
