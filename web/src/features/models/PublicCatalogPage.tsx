@@ -18,7 +18,7 @@ export function PublicCatalogPage({ modelId }: { modelId?: string }) {
         <img
           src={`${import.meta.env.BASE_URL}favicon.svg`}
           alt=""
-          className="h-6 w-[26px]"
+          className="h-6 w-[1.638rem]"
         />
         <a
           href="#/"
