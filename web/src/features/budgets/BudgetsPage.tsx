@@ -411,7 +411,7 @@ function UsageCell({ budget }: { budget: Budget }) {
   const allocated = budget.max_budget * budget.user_count
   const state = spendState(spent, allocated)
   return (
-    <div className="flex min-w-[140px] flex-col gap-1">
+    <div className="flex min-w-[8.75rem] flex-col gap-1">
       <div className="flex items-baseline justify-between gap-2 text-xs">
         {/* The one number in this product that changes color, and only in the
             state that has already gone past the limit. */}
